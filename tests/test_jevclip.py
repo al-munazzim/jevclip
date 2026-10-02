@@ -1054,6 +1054,30 @@ class SNUStrategy(Temp):
         self.assertIn("## Boundary scores", report_text)
         self.assertIn("S2→S3", report_text)
 
+    def test_soft_threshold_and_max_duration_can_increase_granularity(self):
+        segs = [Segment("S%d" % (i + 1), start, end, 0, 1, "s%d" % (i + 1))
+                for i, (start, end) in enumerate([(0, 50), (50, 124), (124, 168), (168, 196)])]
+
+        def boundary(i, relation, p):
+            return snu.BoundaryVerdict("B%d" % i, segs[i - 1], segs[i], "ok", {
+                "good_snu_boundary": {"type": "noul", "noul": p},
+                "relation": {"type": "choice", "choice": relation, "confidence": 0.8},
+                "before_complete": {"type": "noul", "noul": 0.8},
+                "after_starts_new_unit": {"type": "noul", "noul": 0.8},
+            })
+
+        boundaries = [boundary(1, "same_unit", 0.55), boundary(2, "soft_transition", 0.63),
+                      boundary(3, "outro_or_meta", 0.72)]
+        snu.assess_boundaries(boundaries, threshold=0.7, require_complete=0.5, soft_threshold=0.6)
+        self.assertEqual([b.cut for b in boundaries], [False, True, True])
+
+        forced = [boundary(1, "same_unit", 0.55), boundary(2, "soft_transition", 0.63),
+                  boundary(3, "outro_or_meta", 0.72)]
+        snu.assess_boundaries(forced, threshold=0.7, require_complete=0.5)
+        snu.apply_max_snu_seconds(forced, 90)
+        self.assertTrue(forced[1].cut)
+        self.assertIn("forced by max_snu_seconds", forced[1].reasons[0])
+
 
 if __name__ == "__main__":
     unittest.main()

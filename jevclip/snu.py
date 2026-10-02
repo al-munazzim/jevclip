@@ -219,7 +219,8 @@ def judge_boundaries(store, client, transcript, reuse=True, window=2):
     return verdicts
 
 
-def assess_boundaries(verdicts, threshold=0.70, min_confidence=0.0, require_complete=0.50):
+def assess_boundaries(verdicts, threshold=0.70, min_confidence=0.0, require_complete=0.50,
+                      soft_threshold=None):
     for v in verdicts:
         v.reasons = []
         if v.status != "ok":
@@ -232,21 +233,56 @@ def assess_boundaries(verdicts, threshold=0.70, min_confidence=0.0, require_comp
         v.relation_confidence = float(a["relation"].get("confidence", 0.0))
         v.before_complete = float(a["before_complete"]["noul"])
         v.after_starts_new_unit = float(a["after_starts_new_unit"]["noul"])
-        relation_ok = v.relation in ("strong_boundary", "outro_or_meta")
-        score_ok = v.good_boundary >= threshold
+        strong_relation = v.relation in ("strong_boundary", "outro_or_meta")
+        soft_relation = v.relation == "soft_transition" and soft_threshold is not None
+        score_ok = v.good_boundary >= threshold if strong_relation else (
+            v.good_boundary >= soft_threshold if soft_relation else False)
+        relation_ok = strong_relation or soft_relation
         conf_ok = v.relation_confidence >= min_confidence
         complete_ok = min(v.before_complete, v.after_starts_new_unit) >= require_complete
         v.cut = relation_ok and score_ok and conf_ok and complete_ok
         if not v.cut:
             if not relation_ok:
                 v.reasons.append("relation=%s" % v.relation)
-            if not score_ok:
-                v.reasons.append("boundary %.2f < %.2f" % (v.good_boundary, threshold))
+            if relation_ok and not score_ok:
+                needed = threshold if strong_relation else soft_threshold
+                v.reasons.append("boundary %.2f < %.2f" % (v.good_boundary, needed))
             if not conf_ok:
                 v.reasons.append("relation confidence %.2f < %.2f" % (v.relation_confidence, min_confidence))
             if not complete_ok:
                 v.reasons.append("before/after completeness %.2f/%.2f" % (v.before_complete, v.after_starts_new_unit))
     return verdicts
+
+
+def apply_max_snu_seconds(boundaries, max_snu_seconds):
+    if not max_snu_seconds or max_snu_seconds <= 0:
+        return boundaries
+    start = 0
+    i = 0
+    while i < len(boundaries):
+        if boundaries[i].cut:
+            start = i + 1
+            i += 1
+            continue
+        span = boundaries[i].after.end - boundaries[start].before.start
+        if span <= max_snu_seconds:
+            i += 1
+            continue
+        # Pick the strongest judged boundary in the overlong span. Prefer semantic
+        # transition labels, but still split on the best available score.
+        candidates = [b for b in boundaries[start:i + 1] if b.status == "ok"]
+        if not candidates:
+            i += 1
+            continue
+        def rank(b):
+            rel = {"outro_or_meta": 3, "strong_boundary": 3, "soft_transition": 2, "same_unit": 1}.get(b.relation, 0)
+            return (rel, b.good_boundary or 0.0, b.before_complete or 0.0, b.after_starts_new_unit or 0.0)
+        best = max(candidates, key=rank)
+        best.cut = True
+        best.reasons = ["forced by max_snu_seconds %.0f" % max_snu_seconds]
+        start = boundaries.index(best) + 1
+        i = max(i + 1, start)
+    return boundaries
 
 
 def build_snus(transcript, boundaries):
@@ -314,12 +350,14 @@ def classify_snus(store, client, transcript, snus, reuse=True):
 
 def process(store, client, video, subs, out_dir, title=None, target=subtitles.TARGET,
             reuse=True, threshold=0.70, min_confidence=0.0, require_complete=0.50,
-            window=2, classify=True):
+            window=2, classify=True, soft_threshold=None, max_snu_seconds=0):
     transcript = store.ingest(subs, video, title=title, target=target)
     before = dict(client.usage)
     boundaries = assess_boundaries(
         judge_boundaries(store, client, transcript, reuse=reuse, window=window),
-        threshold=threshold, min_confidence=min_confidence, require_complete=require_complete)
+        threshold=threshold, min_confidence=min_confidence, require_complete=require_complete,
+        soft_threshold=soft_threshold)
+    boundaries = apply_max_snu_seconds(boundaries, max_snu_seconds)
     snus = build_snus(transcript, boundaries)
     if classify:
         snus = classify_snus(store, client, transcript, snus, reuse=reuse)
@@ -332,6 +370,8 @@ def process(store, client, video, subs, out_dir, title=None, target=subtitles.TA
         "require_complete": require_complete,
         "window": window,
         "classify": classify,
+        "soft_threshold": soft_threshold,
+        "max_snu_seconds": max_snu_seconds,
     })
     _write_json(os.path.join(folder, "snus.json"), data)
     with open(os.path.join(folder, "snu-report.md"), "w", encoding="utf-8") as fh:

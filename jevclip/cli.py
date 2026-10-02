@@ -53,6 +53,10 @@ def main(argv=None):
                    help="minimum relation confidence to cut (default 0.0)")
     p.add_argument("--require-complete", type=float, default=0.50,
                    help="minimum before/after completeness scores to cut (default 0.50)")
+    p.add_argument("--soft-threshold", type=float,
+                   help="also cut soft_transition boundaries at or above this probability")
+    p.add_argument("--max-snu-seconds", type=float, default=0.0,
+                   help="force a cut at the best scored boundary before an SNU grows beyond this many seconds")
     p.add_argument("--window", type=int, default=2,
                    help="candidate segments on each side of a boundary sent to Jev (default 2)")
     p.add_argument("--segment-seconds", type=float, default=subtitles.TARGET)
@@ -123,7 +127,8 @@ def _snu(store, args):
                                 target=args.segment_seconds, reuse=not args.no_reuse,
                                 threshold=args.threshold, min_confidence=args.min_confidence,
                                 require_complete=args.require_complete, window=args.window,
-                                classify=not args.no_classify)
+                                classify=not args.no_classify, soft_threshold=args.soft_threshold,
+                                max_snu_seconds=args.max_snu_seconds)
             except (ValueError, RuntimeError, OSError) as exc:
                 print("      failed: %s" % exc)
                 failed += 1
