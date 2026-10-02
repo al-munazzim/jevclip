@@ -2,7 +2,7 @@ import argparse
 import os
 import sys
 
-from . import labels, pipeline, reel, rubric, subtitles
+from . import labels, pipeline, reel, rubric, snu, subtitles
 from .jev import MODEL, JevClient
 from .llm import ChatLLM
 from .store import Store
@@ -42,6 +42,24 @@ def main(argv=None):
                         "only a little faster, at 1080p and above; elsewhere the default encoder is used")
     p.add_argument("--no-reuse", action="store_true", help="call Jev even for segments already judged")
 
+    p = sub.add_parser("snu", help="derive Semantic Narrative Units by scoring boundaries with Jev")
+    p.add_argument("paths", nargs="+")
+    p.add_argument("--subs", help="subtitles or a .txt/.md script for a single video (default: found next to it)")
+    p.add_argument("--title", help="title for a single video (default: file name)")
+    p.add_argument("--out", default="jevclip-snu-out", help="output folder (default ./jevclip-snu-out)")
+    p.add_argument("--threshold", type=float, default=0.70,
+                   help="minimum boundary probability to cut (default 0.70)")
+    p.add_argument("--min-confidence", type=float, default=0.0,
+                   help="minimum relation confidence to cut (default 0.0)")
+    p.add_argument("--require-complete", type=float, default=0.50,
+                   help="minimum before/after completeness scores to cut (default 0.50)")
+    p.add_argument("--window", type=int, default=2,
+                   help="candidate segments on each side of a boundary sent to Jev (default 2)")
+    p.add_argument("--segment-seconds", type=float, default=subtitles.TARGET)
+    p.add_argument("--model", default=MODEL)
+    p.add_argument("--no-classify", action="store_true", help="skip per-SNU kind/standalone classification")
+    p.add_argument("--no-reuse", action="store_true", help="call Jev even for cached boundary/SNU judgments")
+
     p = sub.add_parser("export", help="judged segments as JSONL with an empty keep/drop label")
     p.add_argument("path")
 
@@ -58,6 +76,8 @@ def main(argv=None):
             return 0
         if args.cmd == "eval":
             return _eval(args)
+        if args.cmd == "snu":
+            return _snu(store, args)
         return _run(store, args)
 
 
@@ -75,6 +95,55 @@ def _eval(args):
     if report["recommended"] is None:
         print("\nno threshold keeps error <= %.2f on this set" % args.max_error)
     return 0
+
+
+def _snu(store, args):
+    single = len(args.paths) == 1 and not os.path.isdir(args.paths[0])
+    if (args.subs or args.title) and not single:
+        print("--subs and --title apply to a single video", file=sys.stderr)
+        return 2
+    if args.window < 1:
+        print("--window must be at least 1", file=sys.stderr)
+        return 2
+    items = pipeline.discover(args.paths, subs=args.subs, exclude=args.out)
+    if not items:
+        print("no videos or subtitle files found", file=sys.stderr)
+        return 1
+    client = JevClient(model=args.model)
+    failed = 0
+    try:
+        for n, (video, subs) in enumerate(items, 1):
+            print("[%d/%d] %s" % (n, len(items), os.path.basename(video or subs)))
+            if subs is None:
+                print("      skipped: no subtitles or script next to it (.srt / .vtt / .json / .txt / .md with the same name)")
+                failed += 1
+                continue
+            try:
+                r = snu.process(store, client, video, subs, args.out, title=args.title,
+                                target=args.segment_seconds, reuse=not args.no_reuse,
+                                threshold=args.threshold, min_confidence=args.min_confidence,
+                                require_complete=args.require_complete, window=args.window,
+                                classify=not args.no_classify)
+            except (ValueError, RuntimeError, OSError) as exc:
+                print("      failed: %s" % exc)
+                failed += 1
+                continue
+            u = r["usage"]
+            extra = []
+            if r["reused"]:
+                extra.append("%d judgments read from cache" % r["reused"])
+            if r["errors"]:
+                extra.append("errors: %s" % ", ".join(r["errors"]))
+            print("      %d candidates, %d accepted cuts → %d SNUs" % (r["candidates"], r["cuts"], r["snus"]))
+            print("      Jev %d requests $%.4f%s → %s/" % (
+                u["requests"], u["usd"], " · " + "; ".join(extra) if extra else "", r["folder"]))
+    finally:
+        client.close()
+    u = client.usage
+    print("\ntotal: %d item(s), Jev %d requests, %d input tokens, $%.4f%s" % (
+        len(items), u["requests"], u["input_tokens"], u["usd"],
+        ", %d failed or skipped" % failed if failed else ""))
+    return 1 if failed == len(items) else 0
 
 
 def _run(store, args):

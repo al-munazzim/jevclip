@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from jevclip import labels, pipeline, reel, report, rubric, subtitles, summary
+from jevclip import labels, pipeline, reel, report, rubric, snu, subtitles, summary
 from jevclip.jev import JevClient, JudgeError
 from jevclip.llm import ChatLLM
 from jevclip.store import Segment, Store
@@ -999,6 +999,61 @@ class Cutting(unittest.TestCase):
         self.assertEqual((again["kept"], again["full"], again["full_note"]), (6, None, "没有要删的片段，去水完整版就是原片"))
         self.assertFalse(os.path.exists(first["full"]))
         self.assertTrue(os.path.exists(again["reel"]))
+
+
+class SNUStrategy(Temp):
+    def snu_transport(self):
+        sent = []
+
+        def choice(name, criteria, confidence=0.9):
+            return {"type": "choice", "choice": name, "confidence": confidence,
+                    "probabilities": {k: (confidence if k == name else (1 - confidence) / (len(criteria) - 1))
+                                      for k in criteria}}
+
+        def transport(payload, api_key, timeout):
+            sent.append(payload)
+            qs = payload["questions"]
+            state = payload["state"]
+            if "good_snu_boundary" in qs:
+                strong = "CANDIDATE CUT: after S2" in state
+                relation = "strong_boundary" if strong else "same_unit"
+                return {"model": "fake-snu", "answers": {
+                    "good_snu_boundary": {"type": "noul", "noul": 0.92 if strong else 0.2},
+                    "relation": choice(relation, snu.RELATIONS, 0.82),
+                    "before_complete": {"type": "noul", "noul": 0.85},
+                    "after_starts_new_unit": {"type": "noul", "noul": 0.88},
+                }, "usage": {"input_tokens": 123}}
+            kind = "recommendation" if "METHOD starts here" in state else "explanation"
+            return {"model": "fake-snu", "answers": {
+                "kind": choice(kind, snu.SNU_KINDS, 0.77),
+                "standalone": {"type": "noul", "noul": 0.81},
+            }, "usage": {"input_tokens": 77}}
+
+        transport.sent = sent
+        return transport
+
+    def test_snu_process_scores_boundaries_and_writes_snus_json(self):
+        cues = []
+        for i, text in enumerate([
+            "Intro context continues.", "Same topic still continues.",
+            "METHOD starts here with first step.", "METHOD continues with second step."]):
+            cues.append((i * 11.0, i * 11.0 + 10.0, text))
+        subs = write(self.tmp, "talk.srt", srt(cues))
+        out = os.path.join(self.tmp, "snu-out")
+        client = JevClient(api_key="k", transport=self.snu_transport(), workers=1)
+        result = snu.process(self.store, client, None, subs, out, title="SNU demo", target=9.0)
+        self.assertEqual((result["candidates"], result["boundaries"], result["cuts"], result["snus"]), (4, 3, 1, 2))
+        with open(os.path.join(result["folder"], "snus.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        self.assertEqual(data["rubric"], "snu_boundary.v1")
+        self.assertEqual([s["candidate_segments"] for s in data["snus"]], [["S1", "S2"], ["S3", "S4"]])
+        self.assertEqual(data["snus"][1]["kind"], "recommendation")
+        self.assertTrue(data["boundary_scores"][1]["cut"])
+        with open(os.path.join(result["folder"], "snu-report.md"), encoding="utf-8") as fh:
+            report_text = fh.read()
+        self.assertIn("## Boundary scores", report_text)
+        self.assertIn("S2→S3", report_text)
+
 
 if __name__ == "__main__":
     unittest.main()
