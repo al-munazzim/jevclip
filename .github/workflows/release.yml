@@ -1,0 +1,132 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create/update, e.g. v0.1'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset_suffix }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_suffix: linux-x86_64
+          - os: macos-14
+            asset_suffix: macos-arm64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install package and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pyinstaller
+
+      - name: Run tests
+        run: python -m unittest discover -s tests
+
+      - name: Build standalone binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          entrypoint="$(command -v jevclip)"
+          asset="jevclip-${{ matrix.asset_suffix }}"
+          pyinstaller --clean --onefile --name "$asset" "$entrypoint"
+          mkdir -p release
+          cp "dist/$asset" "release/$asset"
+          chmod +x "release/$asset"
+          "release/$asset" --help
+          "release/$asset" snu --help
+          (cd release && shasum -a 256 "$asset" > "$asset.sha256")
+
+      - name: Write release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="jevclip-${{ matrix.asset_suffix }}"
+          sha="$(cut -d' ' -f1 "release/$asset.sha256")"
+          commit="$(git rev-parse HEAD)"
+          tag="${GITHUB_REF_NAME:-}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          fi
+          ASSET="$asset" PLATFORM="${{ matrix.asset_suffix }}" TAG="$tag" COMMIT="$commit" SHA256="$sha" \
+            python -c 'import json, os, platform; print(json.dumps({"name":"jevclip","asset":os.environ["ASSET"],"platform":os.environ["PLATFORM"],"tag":os.environ["TAG"],"commit":os.environ["COMMIT"],"sha256":os.environ["SHA256"],"python":platform.python_version(),"system":platform.system(),"machine":platform.machine()}, indent=2))' > "release/$asset.json"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jevclip-${{ matrix.asset_suffix }}
+          path: |
+            release/jevclip-${{ matrix.asset_suffix }}
+            release/jevclip-${{ matrix.asset_suffix }}.sha256
+            release/jevclip-${{ matrix.asset_suffix }}.json
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Verify downloaded artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          chmod +x jevclip-linux-x86_64 jevclip-macos-arm64
+          shasum -a 256 -c jevclip-linux-x86_64.sha256
+          shasum -a 256 -c jevclip-macos-arm64.sha256
+          ./jevclip-linux-x86_64 --help
+          printf 'Release assets:\n'
+          ls -l
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: jevclip ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            release-artifacts/jevclip-linux-x86_64
+            release-artifacts/jevclip-linux-x86_64.sha256
+            release-artifacts/jevclip-linux-x86_64.json
+            release-artifacts/jevclip-macos-arm64
+            release-artifacts/jevclip-macos-arm64.sha256
+            release-artifacts/jevclip-macos-arm64.json
