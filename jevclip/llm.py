@@ -11,6 +11,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlsplit
 
+from .tls import ensure_ca_bundle
+
 _THINK = re.compile(r"<(think|thinking|reasoning)>.*?</\1>", re.S | re.I)
 # A scratchpad cut off by max_tokens never closes; drop everything before the close tag.
 _OPEN_THINK = re.compile(r"^.*?</(?:think|thinking|reasoning)>", re.S | re.I)
@@ -69,6 +71,7 @@ def _post(url, body, api_key, timeout):
         headers={"Authorization": "Bearer %s" % api_key, "Content-Type": "application/json"},
         method="POST",
     )
+    ensure_ca_bundle()
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))

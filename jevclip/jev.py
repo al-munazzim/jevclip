@@ -11,11 +11,14 @@ import http.client
 import json
 import os
 import queue
+import ssl
 import threading
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import unquote, urlsplit
+
+from .tls import ensure_ca_bundle
 
 ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-1.13.0"
@@ -132,10 +135,13 @@ class JevClient:
         # http.client ignores HTTPS_PROXY on its own; honour it (and the macOS
         # system proxy, via getproxies) the way urllib would.
         proxy = urllib.request.getproxies().get("https")
+        context = ssl.create_default_context(cafile=ensure_ca_bundle())
         if not proxy or urllib.request.proxy_bypass(self._host):
-            return http.client.HTTPSConnection(self._host, timeout=timeout)
+            return http.client.HTTPSConnection(self._host, timeout=timeout, context=context)
         p = urlsplit(proxy if "://" in proxy else "http://" + proxy)
-        conn = http.client.HTTPSConnection(p.hostname, p.port or 8080, timeout=timeout)
+        if not p.hostname:
+            raise JudgeError("unreachable")
+        conn = http.client.HTTPSConnection(p.hostname, p.port or 8080, timeout=timeout, context=context)
         headers = {}
         if p.username:
             creds = "%s:%s" % (unquote(p.username), unquote(p.password or ""))

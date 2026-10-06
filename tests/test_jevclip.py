@@ -2,11 +2,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
-from jevclip import labels, pipeline, reel, report, rubric, snu, subtitles, summary
+from jevclip import labels, pipeline, reel, report, rubric, snu, subtitles, summary, tls
 from jevclip.jev import JevClient, JudgeError
 from jevclip.llm import ChatLLM
 from jevclip.store import Segment, Store
@@ -763,6 +764,32 @@ class Summary(unittest.TestCase):
     def test_nothing_configured_means_no_writer(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertIsNone(ChatLLM.from_env())
+
+
+class TLSCertificates(unittest.TestCase):
+    def test_existing_ssl_cert_file_is_respected(self):
+        with tempfile.NamedTemporaryFile() as fh, mock.patch.dict(os.environ, {"SSL_CERT_FILE": fh.name}, clear=True):
+            self.assertEqual(tls.ensure_ca_bundle(), fh.name)
+            self.assertEqual(os.environ["SSL_CERT_FILE"], fh.name)
+
+    def test_certifi_bundle_is_exported_when_no_cert_file_is_configured(self):
+        with tempfile.NamedTemporaryFile() as fh, mock.patch.dict(os.environ, {}, clear=True):
+            fake_certifi = mock.Mock(where=mock.Mock(return_value=fh.name))
+            with mock.patch.dict(sys.modules, {"certifi": fake_certifi}):
+                self.assertEqual(tls.ensure_ca_bundle(), fh.name)
+                self.assertEqual(os.environ["SSL_CERT_FILE"], fh.name)
+
+    def test_jev_https_connection_uses_the_bundle_context(self):
+        with tempfile.NamedTemporaryFile() as fh, \
+                mock.patch.dict(os.environ, {"SSL_CERT_FILE": fh.name}, clear=True), \
+                mock.patch("jevclip.jev.urllib.request.getproxies", return_value={}), \
+                mock.patch("jevclip.jev.urllib.request.proxy_bypass", return_value=False), \
+                mock.patch("jevclip.jev.ssl.create_default_context") as context, \
+                mock.patch("jevclip.jev.http.client.HTTPSConnection") as conn:
+            context.return_value = "ctx"
+            JevClient(api_key="k")._connect(7)
+        context.assert_called_once_with(cafile=fh.name)
+        conn.assert_called_once_with("api.typesafe.ai", timeout=7, context="ctx")
 
 
 class Transport(unittest.TestCase):
