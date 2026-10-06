@@ -139,6 +139,7 @@ def _snu(store, args):
                 extra.append("%d judgments read from cache" % r["reused"])
             if r["errors"]:
                 extra.append("errors: %s" % ", ".join(r["errors"]))
+                failed += 1
             print("      %d candidates, %d accepted cuts → %d SNUs" % (r["candidates"], r["cuts"], r["snus"]))
             print("      Jev %d requests $%.4f%s → %s/" % (
                 u["requests"], u["usd"], " · " + "; ".join(extra) if extra else "", r["folder"]))
@@ -147,8 +148,8 @@ def _snu(store, args):
     u = client.usage
     print("\ntotal: %d item(s), Jev %d requests, %d input tokens, $%.4f%s" % (
         len(items), u["requests"], u["input_tokens"], u["usd"],
-        ", %d failed or skipped" % failed if failed else ""))
-    return 1 if failed == len(items) else 0
+        ", %d failed/skipped/incomplete" % failed if failed else ""))
+    return 1 if failed else 0
 
 
 def _run(store, args):
@@ -207,6 +208,7 @@ def _run(store, args):
                 extra.append("%d 段读缓存" % r["reused"])
             if r["undecided"]:
                 extra.append("%d 段未判断（%s）" % (r["undecided"], ", ".join(r["errors"])))
+                failed += 1
             if r["summary_note"]:
                 extra.append(r["summary_note"])
             if r["unknown_citations"]:
@@ -225,8 +227,8 @@ def _run(store, args):
     u = client.usage
     print("\ntotal: %d video(s), Jev %d requests, %d input tokens, $%.4f%s"
           % (len(items), u["requests"], u["input_tokens"], u["usd"],
-             ", %d failed or skipped" % failed if failed else ""))
-    return 1 if failed == len(items) else 0
+             ", %d failed/skipped/incomplete" % failed if failed else ""))
+    return 1 if failed else 0
 
 
 def _fast_available():

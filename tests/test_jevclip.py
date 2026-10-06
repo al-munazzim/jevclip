@@ -831,6 +831,59 @@ class Discover(unittest.TestCase):
         self.assertEqual([os.path.basename(s) for _, s in explicit], ["notes.txt"])
 
 
+class CLIExitStatus(unittest.TestCase):
+    def run_result(self, **kw):
+        r = {
+            "segments": 1, "kept": 1, "timed": True, "kept_seconds": 10.0,
+            "clips": 0, "reel": None, "reel_seconds": None, "reel_segments": 0,
+            "full": None, "full_seconds": None, "full_removed": 0, "full_removed_seconds": 0.0,
+            "full_note": None, "full_between": [], "summary_note": None,
+            "unknown_citations": [], "flagged": 0, "summary_uncovered": [],
+            "usage": {"requests": 0, "input_tokens": 0, "usd": 0.0},
+            "reused": 0, "undecided": 0, "errors": [], "folder": "out/doc",
+        }
+        r.update(kw)
+        return r
+
+    def snu_result(self, **kw):
+        r = {
+            "candidates": 2, "cuts": 1, "snus": 2,
+            "usage": {"requests": 0, "input_tokens": 0, "usd": 0.0},
+            "reused": 0, "errors": [], "folder": "out/doc",
+        }
+        r.update(kw)
+        return r
+
+    def test_run_cli_exits_nonzero_when_any_item_is_skipped(self):
+        from jevclip import cli
+        items = [("missing-subtitles.mp4", None), ("ok.mp4", "ok.srt")]
+        with mock.patch.object(pipeline, "discover", return_value=items), \
+                mock.patch.object(pipeline, "process", return_value=self.run_result()), \
+                mock.patch("sys.stdout"):
+            self.assertEqual(cli.main(["run", "batch", "--no-summary", "--no-cut"]), 1)
+
+    def test_run_cli_exits_nonzero_when_judgments_are_undecided(self):
+        from jevclip import cli
+        with mock.patch.object(pipeline, "discover", return_value=[("v.mp4", "v.srt")]), \
+                mock.patch.object(pipeline, "process", return_value=self.run_result(undecided=1, errors=["timeout"])), \
+                mock.patch("sys.stdout"):
+            self.assertEqual(cli.main(["run", "v.srt", "--no-summary", "--no-cut"]), 1)
+
+    def test_snu_cli_exits_nonzero_when_boundary_or_classification_errors_remain(self):
+        from jevclip import cli
+        with mock.patch.object(pipeline, "discover", return_value=[(None, "v.srt")]), \
+                mock.patch.object(snu, "process", return_value=self.snu_result(errors=["bad_answer"])), \
+                mock.patch("sys.stdout"):
+            self.assertEqual(cli.main(["snu", "v.srt"]), 1)
+
+    def test_clean_snu_cli_exits_zero(self):
+        from jevclip import cli
+        with mock.patch.object(pipeline, "discover", return_value=[(None, "v.srt")]), \
+                mock.patch.object(snu, "process", return_value=self.snu_result()), \
+                mock.patch("sys.stdout"):
+            self.assertEqual(cli.main(["snu", "v.srt"]), 0)
+
+
 class Labels(Temp):
     def test_export_is_labelable_and_text_is_what_jev_read(self):
         t = self.store.ingest(write(self.tmp, "talk.srt", srt(CUES)), target=9.0)
