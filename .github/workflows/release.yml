@@ -21,7 +21,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Build the Linux binary on Ubuntu 22.04 so PyInstaller links
+          # against glibc 2.35 instead of ubuntu-latest/24.04's glibc 2.39.
+          # That keeps the asset runnable inside Debian 12/bookworm containers
+          # (glibc 2.36) as well as newer hosts.
+          - os: ubuntu-22.04
             asset_suffix: linux-x86_64
           - os: macos-14
             asset_suffix: macos-arm64
