@@ -1095,9 +1095,10 @@ class SNUStrategy(Temp):
             qs = payload["questions"]
             state = payload["state"]
             if "good_snu_boundary" in qs:
-                strong = "CANDIDATE CUT: after S2" in state
+                strong = "CANDIDATE CUT: after C2" in state
                 relation = "strong_boundary" if strong else "same_unit"
                 return {"model": "fake-snu", "answers": {
+                    "direction": choice("cut_here" if strong else "move_later", snu.DIRECTIONS, 0.9),
                     "good_snu_boundary": {"type": "noul", "noul": 0.92 if strong else 0.2},
                     "relation": choice(relation, snu.RELATIONS, 0.82),
                     "before_complete": {"type": "noul", "noul": 0.85},
@@ -1125,14 +1126,146 @@ class SNUStrategy(Temp):
         self.assertEqual((result["candidates"], result["boundaries"], result["cuts"], result["snus"]), (4, 3, 1, 2))
         with open(os.path.join(result["folder"], "snus.json"), encoding="utf-8") as fh:
             data = json.load(fh)
-        self.assertEqual(data["rubric"], "snu_boundary.v1")
+        self.assertEqual(data["rubric"], "snu_boundary.v2")
         self.assertEqual([s["candidate_segments"] for s in data["snus"]], [["S1", "S2"], ["S3", "S4"]])
         self.assertEqual(data["snus"][1]["kind"], "recommendation")
         self.assertTrue(data["boundary_scores"][1]["cut"])
         with open(os.path.join(result["folder"], "snu-report.md"), encoding="utf-8") as fh:
             report_text = fh.read()
         self.assertIn("## Boundary scores", report_text)
-        self.assertIn("S2→S3", report_text)
+        self.assertIn("C2→C3", report_text)
+
+    def directed_run(self, directions, size=32, budget=8, max_seconds=0, errors=(), target=90):
+        """Deterministic no-network cue-level Jev fixture."""
+        import re
+        cues = [(i * 3.0, i * 3.0 + 3.0, "Topic %d cue %d" % (i // 8, i))
+                for i in range(size)]
+        t = self.store.ingest(write(self.tmp, "directed.srt", srt(cues)), target=target)
+        sent = []
+
+        def reply(payload, api_key, timeout):
+            state = payload["state"]
+            pos = int(re.search(r"CANDIDATE CUT: after C(\d+)", state).group(1))
+            sent.append((pos, state))
+            if pos in errors:
+                raise JudgeError("timeout")
+            direction, relation, score = directions.get(pos, ("no_boundary_nearby", "same_unit", 0.1))
+            return {"model": "fake", "answers": {
+                "direction": {"type": "choice", "choice": direction, "confidence": 0.9},
+                "good_snu_boundary": {"type": "noul", "noul": score},
+                "relation": {"type": "choice", "choice": relation, "confidence": 0.9},
+                "before_complete": {"type": "noul", "noul": 0.9},
+                "after_starts_new_unit": {"type": "noul", "noul": 0.9},
+            }}
+
+        client = JevClient(api_key="k", transport=reply, workers=1)
+        verdicts = snu.judge_boundaries(self.store, client, t, search_budget=budget)
+        units = snu.build_snus(t, verdicts, max_seconds)
+        return t, client, verdicts, units, sent
+
+    def test_directed_earlier_later_refines_inside_coarse_anchor(self):
+        # Coarse target is 90s, but cue 15 is the actual boundary.
+        directions = {21: ("move_earlier", "same_unit", 0.1),
+                      17: ("move_earlier", "same_unit", 0.1),
+                      15: ("cut_here", "strong_boundary", 0.95)}
+        t, client, vs, units, sent = self.directed_run(directions)
+        self.assertEqual([v.cue_index for v in vs if v.cut], [15])
+        self.assertIn([21, 17, 15], [[p for p, _ in sent[i:i + 3]] for i in range(len(sent) - 2)])
+        self.assertTrue(any("CURRENT SNU START: C1" in state and "Topic 1" in state
+                            for _, state in sent))
+        self.assertEqual(units[0].cue_stop, 15)
+        self.assertEqual(units[0].text.count("cue"), 15)
+        self.assertEqual(units[0].status, "unresolved")  # earlier gap is explicit
+        self.assertTrue(any("uninspected earlier interval" in r for v in vs for r in v.reasons))
+
+    def test_two_transitions_are_not_collapsed_into_later_anchor(self):
+        directions = {21: ("move_earlier", "same_unit", 0.1),
+                      17: ("move_earlier", "same_unit", 0.1),
+                      15: ("cut_here", "strong_boundary", 0.95),
+                      28: ("move_earlier", "same_unit", 0.1),
+                      24: ("move_later", "same_unit", 0.1),
+                      26: ("move_earlier", "same_unit", 0.1),
+                      25: ("cut_here", "outro_or_meta", 0.95)}
+        t, client, vs, units, sent = self.directed_run(directions)
+        self.assertEqual([v.cue_index for v in vs if v.cut], [15, 25], [p for p, _ in sent])
+        self.assertEqual([(u.cue_start, u.cue_stop) for u in units],
+                         [(0, 15), (15, 25), (25, 32)])
+        self.assertTrue(any("CURRENT SNU START: C16" in state for _, state in sent))
+
+    def test_no_boundary_and_errors_are_unresolved_not_forced(self):
+        t, client, vs, units, sent = self.directed_run({}, size=16, budget=2, max_seconds=20,
+                                                        errors=(7,))
+        self.assertFalse(any(v.cut for v in vs))
+        self.assertEqual(units[0].status, "oversized_unresolved")
+        self.assertIn("timeout", [v.error_code for v in vs])
+        self.assertLessEqual(len(sent), 2 * (len(t.segments) + 16 // 6 + 1))
+
+    def test_direction_cut_requires_all_scores_and_relation(self):
+        for relation, score in (("same_unit", 0.99), ("strong_boundary", 0.2)):
+            t, client, vs, units, sent = self.directed_run({7: ("cut_here", relation, score)},
+                                                            size=16, budget=1)
+            self.assertFalse(any(v.cut for v in vs))
+
+    def test_explicit_force_and_cache_include_start_and_prompt(self):
+        t, client, vs, units, sent = self.directed_run({}, size=16, budget=1, max_seconds=20)
+        again = snu.judge_boundaries(self.store, client, t, search_budget=1)
+        self.assertTrue(all(v.reused for v in again))
+        self.assertEqual(client.usage["requests"], len(sent))
+        self.assertNotEqual(snu.boundary_state(t, 7, snu_start=0),
+                            snu.boundary_state(t, 7, snu_start=2))
+        forced = snu.force_cue_boundaries(t, vs, 20)
+        self.assertTrue(any(b.cut and b.provenance == "forced_max" for b in forced))
+        self.assertTrue(all(b.provenance == "forced_max" for b in forced if b.cut))
+        forced_units = snu.build_snus(t, forced, 20)
+        self.assertTrue(all(u.status == "forced_low_quality" for u in forced_units))
+
+    def test_unresolved_snu_classification_answer_is_cached(self):
+        t, _, verdicts, units, _ = self.directed_run({}, size=16, budget=1, max_seconds=20)
+        self.assertEqual(units[0].status, "oversized_unresolved")
+        client = JevClient(api_key="k", transport=self.snu_transport(), workers=1)
+        first = snu.classify_snus(self.store, client, t, units)
+        requests = client.usage["requests"]
+        self.assertEqual(requests, 1)
+        self.assertEqual(first[0].status, "oversized_unresolved")
+        again = snu.classify_snus(self.store, client, t, units)
+        self.assertEqual(client.usage["requests"], requests)
+        self.assertTrue(again[0].reused)
+
+    def test_short_fragment_is_not_accepted_despite_jev_cut_here(self):
+        directions = {7: ("move_earlier", "same_unit", 0.1),
+                      3: ("cut_here", "strong_boundary", 0.95),
+                      5: ("cut_here", "strong_boundary", 0.95)}
+        t, _, verdicts, units, _ = self.directed_run(directions, size=16)
+        self.assertEqual([v.cue_index for v in verdicts if v.cut], [5])
+        rejected = next(v for v in verdicts if v.cue_index == 3)
+        self.assertEqual(rejected.direction, "cut_here")  # preserve Jev's actual answer
+        self.assertTrue(any("shorter than 12 seconds" in r for r in rejected.reasons))
+
+    def test_short_final_tail_revokes_last_semantic_cut(self):
+        t, _, _, _, _ = self.directed_run({}, size=16)
+        cues = snu.cue_segments(t)
+        last = snu.BoundaryVerdict("B13", cues[12], cues[13], "ok", cue_index=13, cut=True)
+        snu.avoid_short_tail(t, [last])
+        self.assertFalse(last.cut)
+        self.assertTrue(any("tail shorter than 12 seconds" in r for r in last.reasons))
+
+    def test_overlapping_anchors_do_not_judge_same_cue_twice(self):
+        directions = {7: ("move_later", "same_unit", 0.1),
+                      14: ("move_earlier", "same_unit", 0.1)}
+        _, _, verdicts, _, _ = self.directed_run(directions, size=16)
+        indices = [v.cue_index for v in verdicts]
+        self.assertEqual(len(indices), len(set(indices)))
+
+    def test_forced_cut_is_before_cue_that_would_exceed_cap(self):
+        t, _, _, _, _ = self.directed_run({}, size=4, target=90)
+        # Four ten-second cues: a 25s cap should split 20s + 20s,
+        # not 10s + 10s + 20s.
+        for i, cue in enumerate(t.cues):
+            cue.start, cue.end = i * 10.0, (i + 1) * 10.0
+        forced = snu.force_cue_boundaries(t, [], 25)
+        units = snu.build_snus(t, forced, 25)
+        self.assertEqual([b.cue_index for b in forced if b.cut], [2])
+        self.assertEqual([round(u.end - u.start) for u in units], [20, 20])
 
     def test_soft_threshold_and_max_duration_can_increase_granularity(self):
         segs = [Segment("S%d" % (i + 1), start, end, 0, 1, "s%d" % (i + 1))

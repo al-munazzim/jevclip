@@ -134,6 +134,19 @@ python3 examples/make_demo.py demo && jevclip run demo/ && python3 examples/scor
 | S2 | 00:48–01:35 | 推广求关注 | 0.04 | ✗ 推广求关注 0.91；可疑说法 0.99；信息密度 1.3/3 |
 | S3 | 01:36–02:25 | 数据实测 | 0.99 | ✓ 保留 |
 
+## SNU：按语义边界拆分文字稿
+
+`jevclip snu` 只输出 `snus.json` 和 `snu-report.md`，**不剪视频文件**；它与上面的 `jevclip run` 高亮/去水流程独立。粗分段仅提供起始搜索位置，Jev 判断下一条语义边界是在当前位置、之前还是之后；程序沿原始字幕 cue 边界定向细查，并在真正接受切点前检查前文是否完整、后文是否开始新单元。没有可信边界时不会默默制造一个。
+
+```bash
+jevclip snu talk.de.vtt --max-snu-seconds 90 --out snu-out
+jevclip snu talk.de.vtt --max-snu-seconds 90 --search-budget 8
+# 仅当下游明确要求硬切时，才允许标记为低质量的强制切点：
+jevclip snu talk.de.vtt --max-snu-seconds 90 --force-max-snu
+```
+
+`--threshold` 的暂定默认值为 0.60；这只在少量真实字幕上做过初步比较，还需要人工标注边界来评估误切和漏切。`--max-snu-seconds` 默认不启用。启用后，超过目标且找不到可信边界的单元标为 `oversized_unresolved`，命令返回非零状态；它不是默认的强制切割开关。`--min-snu-seconds` 默认 12 秒，避免两个语义判断合在一起产生只有几个词的碎片（设为 0 可关闭）。`--force-max-snu` 必须同时指定正的时长限制，且所有强制切点会在 JSON 和报告里与语义接受的切点分开。`--search-budget` 限制每个搜索位置的 Jev 请求数（默认 8）；搜索预算耗尽或判断失败时保留不确定状态，不把它当成接受切点。改变问题措辞或搜索上下文会产生新的缓存键，因此首次运行新策略会重新调用 Jev。
+
 ## 它判断什么
 
 字幕按停顿切成约 20 秒一段：不会拆开任何一条字幕，话说到一半就等下一个停顿再切。段太长会把几件事混在一起打一个平均分（见[实测](#实测)）。每一段 Jev 回答五个问题，都是只针对这一段的绝对判断：

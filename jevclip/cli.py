@@ -1,4 +1,5 @@
 import argparse
+import math
 import os
 import sys
 
@@ -47,8 +48,8 @@ def main(argv=None):
     p.add_argument("--subs", help="subtitles or a .txt/.md script for a single video (default: found next to it)")
     p.add_argument("--title", help="title for a single video (default: file name)")
     p.add_argument("--out", default="jevclip-snu-out", help="output folder (default ./jevclip-snu-out)")
-    p.add_argument("--threshold", type=float, default=0.70,
-                   help="minimum boundary probability to cut (default 0.70)")
+    p.add_argument("--threshold", type=float, default=0.60,
+                   help="minimum boundary probability to cut (provisional default 0.60)")
     p.add_argument("--min-confidence", type=float, default=0.0,
                    help="minimum relation confidence to cut (default 0.0)")
     p.add_argument("--require-complete", type=float, default=0.50,
@@ -56,9 +57,15 @@ def main(argv=None):
     p.add_argument("--soft-threshold", type=float,
                    help="also cut soft_transition boundaries at or above this probability")
     p.add_argument("--max-snu-seconds", type=float, default=0.0,
-                   help="force a cut at the best scored boundary before an SNU grows beyond this many seconds")
-    p.add_argument("--window", type=int, default=2,
-                   help="candidate segments on each side of a boundary sent to Jev (default 2)")
+                   help="mark longer SNUs unresolved; never force a cut unless --force-max-snu is set")
+    p.add_argument("--force-max-snu", action="store_true",
+                   help="explicitly permit low-quality cuts at --max-snu-seconds; mark them forced in the report")
+    p.add_argument("--search-budget", type=int, default=8,
+                   help="maximum Jev evaluations when refining one proposed SNU boundary (default 8)")
+    p.add_argument("--min-snu-seconds", type=float, default=12.0,
+                   help="avoid creating a timed SNU shorter than this many seconds (default 12; 0 disables)")
+    p.add_argument("--window", type=int, default=8,
+                   help="subtitle cues on each side of a proposed cut sent to Jev (default 8)")
     p.add_argument("--segment-seconds", type=float, default=subtitles.TARGET)
     p.add_argument("--model", default=MODEL)
     p.add_argument("--no-classify", action="store_true", help="skip per-SNU kind/standalone classification")
@@ -109,6 +116,18 @@ def _snu(store, args):
     if args.window < 1:
         print("--window must be at least 1", file=sys.stderr)
         return 2
+    if args.search_budget < 1:
+        print("--search-budget must be at least 1", file=sys.stderr)
+        return 2
+    if not math.isfinite(args.max_snu_seconds) or args.max_snu_seconds < 0:
+        print("--max-snu-seconds must be a finite non-negative number", file=sys.stderr)
+        return 2
+    if not math.isfinite(args.min_snu_seconds) or args.min_snu_seconds < 0:
+        print("--min-snu-seconds must be a finite non-negative number", file=sys.stderr)
+        return 2
+    if args.force_max_snu and args.max_snu_seconds == 0:
+        print("--force-max-snu requires a positive --max-snu-seconds", file=sys.stderr)
+        return 2
     items = pipeline.discover(args.paths, subs=args.subs, exclude=args.out)
     if not items:
         print("no videos or subtitle files found", file=sys.stderr)
@@ -128,7 +147,9 @@ def _snu(store, args):
                                 threshold=args.threshold, min_confidence=args.min_confidence,
                                 require_complete=args.require_complete, window=args.window,
                                 classify=not args.no_classify, soft_threshold=args.soft_threshold,
-                                max_snu_seconds=args.max_snu_seconds)
+                                max_snu_seconds=args.max_snu_seconds,
+                                force_max_snu=args.force_max_snu, search_budget=args.search_budget,
+                                min_snu_seconds=args.min_snu_seconds)
             except (ValueError, RuntimeError, OSError) as exc:
                 print("      failed: %s" % exc)
                 failed += 1
@@ -140,7 +161,15 @@ def _snu(store, args):
             if r["errors"]:
                 extra.append("errors: %s" % ", ".join(r["errors"]))
                 failed += 1
-            print("      %d candidates, %d accepted cuts → %d SNUs" % (r["candidates"], r["cuts"], r["snus"]))
+            if r.get("unresolved"):
+                extra.append("%d uncertain SNU(s)" % r["unresolved"])
+            if r.get("oversized_unresolved"):
+                extra.append("%d oversized unresolved SNU(s)" % r["oversized_unresolved"])
+                failed += 1
+            if r.get("forced"):
+                extra.append("%d explicitly forced low-quality cut(s)" % r["forced"])
+            print("      %d candidates, %d accepted cuts, %d forced cuts → %d SNUs" % (
+                r["candidates"], r["cuts"] - r.get("forced", 0), r.get("forced", 0), r["snus"]))
             print("      Jev %d requests $%.4f%s → %s/" % (
                 u["requests"], u["usd"], " · " + "; ".join(extra) if extra else "", r["folder"]))
     finally:
