@@ -160,14 +160,14 @@ def _snu(store, args):
                 extra.append("%d judgments read from cache" % r["reused"])
             if r["errors"]:
                 extra.append("errors: %s" % ", ".join(r["errors"]))
-                failed += 1
             if r.get("unresolved"):
                 extra.append("%d uncertain SNU(s)" % r["unresolved"])
             if r.get("oversized_unresolved"):
                 extra.append("%d oversized unresolved SNU(s)" % r["oversized_unresolved"])
-                failed += 1
             if r.get("forced"):
                 extra.append("%d explicitly forced low-quality cut(s)" % r["forced"])
+            if r["errors"] or r.get("oversized_unresolved") or (r.get("unresolved") and not args.force_max_snu):
+                failed += 1
             print("      %d candidates, %d accepted cuts, %d forced cuts → %d SNUs" % (
                 r["candidates"], r["cuts"] - r.get("forced", 0), r.get("forced", 0), r["snus"]))
             print("      Jev %d requests $%.4f%s → %s/" % (
