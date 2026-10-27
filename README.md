@@ -147,7 +147,7 @@ jevclip snu talk.de.vtt --max-snu-seconds 90 --force-max-snu
 
 `--threshold` 的暂定默认值为 0.60；这只在少量真实字幕上做过初步比较，还需要人工标注边界来评估误切和漏切。未解决的搜索区间会标为 `unresolved`，即使没有长度上限也返回非零状态；显式选择 `--force-max-snu` 表示接受报告中标出的低质量/不确定切点。`--max-snu-seconds` 默认不启用。启用后，超过目标且找不到可信边界的单元标为 `oversized_unresolved`，命令返回非零状态；它不是默认的强制切割开关。`--min-snu-seconds` 默认 12 秒，避免两个语义判断合在一起产生只有几个词的碎片（设为 0 可关闭）。`--force-max-snu` 必须同时指定正的时长限制，且所有强制切点会在 JSON 和报告里与语义接受的切点分开。`--search-budget` 限制每个搜索位置的 Jev 请求数（默认 8）；搜索预算耗尽或判断失败时保留不确定状态，不把它当成接受切点。改变问题措辞或搜索上下文会产生新的缓存键，因此首次运行新策略会重新调用 Jev。
 
-后续可验证文本覆盖、并按输出时间限长的保底拆分方案（**设计提案，尚未实现**）见 [SNU failsafe design](docs/snu-failsafe-design.md)，含流程与状态图。单条超长字幕可在显式选择的保底模式中按文字估算内部切点，并标记时间为估计值；这不保证实际视频时长。目前的 `--force-max-snu` 不能拆开单条超长字幕。
+显式保底模式：`jevclip snu talk.de.vtt --ensure-partition --max-snu-seconds 90`（可选 `--timing-margin 0.15`）。默认行为和旧 JSON 不变；保底模式输出 `schema_version: 2`，`partition`、`cuts` 与每个 SNU 的 `quality_status`、`classification_status`、`timing_basis`/`source_timing_basis`。成功状态码 0 表示归一化文本完整覆盖且**序列化输出时间戳**均不超过上限，即使切点为明确标记的 fallback；输入/时间无效、无法拆分或发布失败则非零。超长单条字幕按句子/词/字素切开，内部时间由字符位置插值估算；`--timing-margin` 仅为估算切点预留余量，**不保证实际音视频时长**。脚本阅读速度和只有起点的转录稿结束时间也标记为推断。旧消费者须按 `schema_version` 分流，不得把 v2 的 `quality_status` 或分类失败等同于旧 `status`。详细约束见 [SNU failsafe design](docs/snu-failsafe-design.md)。
 
 ## 它判断什么
 

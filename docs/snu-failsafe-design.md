@@ -1,6 +1,6 @@
 # SNU failsafe: a valid partition is not a good semantic cut
 
-**Status: proposal for review, not implemented.** This document specifies a possible opt-in successor to the directed boundary search merged in PR #1. The current `jevclip snu` behavior, CLI options, output schema and exit codes remain unchanged by this document. In particular, `--force-max-snu` is **not** the failsafe described here: it cuts only at cue boundaries and may leave an oversized cue.
+**Status: implemented as an opt-in mode in this PR.** `jevclip snu --ensure-partition --max-snu-seconds N` writes a versioned partition result; the default mode, its JSON schema and exit codes remain unchanged. `--force-max-snu` is **not** this failsafe: it cuts only at cue boundaries and may leave an oversized cue. The estimated-time partition bounds output timestamps, not actual speech duration. Word-level media alignment is not implemented; within-cue splits use text interpolation. The optional margin defaults to 0.15. Downstream ingestion policy is unchanged.
 
 ## Why this exists
 
@@ -8,7 +8,7 @@ The directed search should accept only boundaries that pass its semantic checks.
 
 The proposed contract is: for a usable transcript, return ordered, nonempty SNUs covering the **normalized input cues** exactly once. A cap can be verified against cue timestamps at cue-level cuts; if a cut must fall inside a cue, its position in media time is only an estimate unless word-level alignment exists. In the proposed opt-in best-effort mode, validate the cap against the **output's estimated timestamps**, with a configurable planning margin, and mark every estimated within-cue cut and affected unit. Do not claim this verifies actual spoken duration: a 10–15% timing error is acceptable for this use case, but is not a measured guarantee. Fallback boundaries are never silently promoted to semantic judgments. Untimed text needs a separate text/estimated-time policy, not a video-time claim.
 
-## Proposed flow
+## Opt-in flow
 
 ```mermaid
 flowchart TD
@@ -64,7 +64,7 @@ Represent each output as half-open source ranges, e.g. `(cue_index, text_start, 
 - Every unit has `end - start <= max_snu_seconds` **according to its output timestamps**, with a specified tolerance for rounding; validate before and after serialization. An interpolated or otherwise inferred interval must not be described as a measured bound.
 - Every cut has its provenance, reason, available judgment evidence and timing basis; retain estimated timing provenance in JSON and report.
 
-Build and validate in memory, then publish a single coherent result and report. On validation failure, return a nonzero status and diagnostic; do not leave a newly generated `snus.json` that looks valid. Existing outputs from earlier runs must not be mistaken for this run's result (remove, replace atomically, or segregate by run). Classification and rendering happen only after the partition contract is checked, and file publication needs a failure-safe strategy for both artifacts.
+Build and validate in memory, then publish a single coherent result and report. On validation failure, return a nonzero status and diagnostic; do not leave a newly generated `snus.json` that looks valid. The opt-in mode publishes both files in an immutable generation directory and atomically switches a `<doc-id>-partition` symlink to it; callers should resolve that pointer once when reading both artifacts. The pointer is removed before a new failed or skipped run so a previous result is not mistaken for the current run. Classification and rendering happen only after the partition contract is checked.
 
 ## Outcome is multidimensional
 
@@ -100,11 +100,11 @@ Do not reuse today's overloaded `SNU.status` as the sole indicator: it currently
 
 ## CLI and downstream contract
 
-Introduce a distinct opt-in best-effort mode, tentatively `--ensure-partition --max-snu-seconds N` (finite `N > 0`), rather than changing the meaning of existing `--max-snu-seconds` or `--force-max-snu`. Define the configurable planning margin separately (tentatively `--timing-margin 0.15`, only relevant for estimated cuts); do not silently loosen `N`. Default strict semantic search remains unchanged. The intended opt-in exit contract is **0** for a validated partition bounded by its **output timestamps**, including one explicitly marked degraded by fallback cuts or estimated timing; **nonzero** for unusable input, no bounded output partition, validation/publication failure, or other technical failure. Judge unavailability can produce a fully marked fallback partition only under an explicit policy, not as an unannounced semantic success. Batch exit is nonzero if any input fails. Callers that require measured timing, semantic quality or classification can reject a valid-but-degraded output based on separate metadata.
+The distinct opt-in best-effort mode is `--ensure-partition --max-snu-seconds N` (finite `N > 0`); it does not change the meaning of existing `--max-snu-seconds` or `--force-max-snu`. The configurable planning margin is `--timing-margin 0.15` by default and applies to interpolated cuts; it does not silently loosen `N`. Default semantic search remains unchanged. The opt-in exit contract is **0** for a validated partition bounded by its **output timestamps**, including one explicitly marked degraded by fallback cuts or estimated timing; **nonzero** for unusable input, no bounded output partition, validation/publication failure, or other technical failure. Judge unavailability can produce a fully marked fallback partition with recorded search errors, not an unannounced semantic success. Batch exit is nonzero if any input fails. Callers that require measured timing, semantic quality or classification can reject a valid-but-degraded output based on separate metadata.
 
-Downstream ingestion should consume only the versioned, validated partition and retain cut provenance, timing basis and quality metrics; it should not infer success from the existence of `snus.json` or from SNU count alone. Do not change downstream ingestion policy until the jevclip contract is implemented, tested, and reviewed. This document does **not** introduce or endorse a silent always-succeed mode or a measured-time guarantee for interpolated cuts.
+Downstream ingestion should consume only the versioned, validated partition and retain cut provenance, timing basis and quality metrics; it should not infer success from the existence of `snus.json` or from SNU count alone. Downstream ingestion policy is not changed in this PR. This document does **not** introduce or endorse a silent always-succeed mode or a measured-time guarantee for interpolated cuts.
 
-## Implementation order and acceptance checks
+## Implementation and acceptance checks
 
 1. Audit raw cue timings before normalization; record normalization changes. Define and test source-range and timing-basis representations, including inferred ends for start-only transcripts; decide schema versioning and migration for existing JSON consumers.
 2. Implement deterministic fallback selection and within-cue alignment or text-based interpolation with a planning margin, without altering existing mode.
