@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import webbrowser
+from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -19,6 +20,21 @@ from .jev import JevClient
 
 
 _ID = re.compile(r'^[A-Za-z0-9_-]{11}$')
+
+_CUT_MEANING = {
+    'accepted_semantic': ('Semantisch bestätigt', 'Jev hat den Schnitt nach allen Qualitätsprüfungen akzeptiert.'),
+    'best_effort_judged': ('Bewertet, aber nicht akzeptiert', 'Jev hat diese Grenze beurteilt; die Anforderungen für einen semantisch bestätigten Schnitt wurden nicht erfüllt.'),
+    'best_effort_pause': ('Untertitelpause', 'Eine zeitliche Pause zwischen zwei Untertitel-Cues wurde als Schnitt genutzt.'),
+    'best_effort_sentence': ('Satzende', 'Ein Satzende am Cue-Rand wurde als Schnitt genutzt.'),
+    'best_effort_cue': ('Cue-Grenze', 'Eine passende Untertitelgrenze wurde ohne semantische Bestätigung genutzt.'),
+    'best_effort_within_cue': ('Innerhalb einer Cue', 'Eine lange Cue wurde im Text geteilt; die Schnittzeit darin ist geschätzt.'),
+}
+
+_QUALITY_MEANING = {
+    'semantic': 'Keine Fallback-Schnitte in dieser SNU; das sagt nichts über den Inhalt aus.',
+    'degraded': 'Mindestens ein mechanischer Fallback-Schnitt berührt diese SNU; sie kann trotzdem gut sein.',
+    'unresolved_search': 'Die Suche ist für diese SNU unvollständig; kein Qualitätsurteil über den Inhalt.',
+}
 
 
 def youtube_id(source):
@@ -67,6 +83,39 @@ def fetch_captions(video_id, out, language='de'):
     return str(caption)
 
 
+def _quality_overview(data, esc):
+    partition = data['partition']
+    cut_counts = Counter(c['provenance'] for c in data['cuts'])
+    errors = Counter(v.get('error') or 'unknown' for v in data['boundary_scores']
+                     if v.get('status') == 'error')
+    error_count = sum(errors.values())
+    valid = partition.get('status') == 'valid'
+    key_hint = ('<p class="hint">Kein TypeSafe-Key für diesen Lauf: '
+                '<code>TYPESAFE_API_KEY</code> exportieren und erneut ausführen. '
+                'Ohne Key gibt es keine semantische Bestätigung.</p>' if errors.get('no_api_key') else '')
+    error_detail = (', '.join('%s × %d' % (esc(code), count) for code, count in errors.items())
+                    if errors else 'keine')
+    legend = ''.join('<li><code>%s</code> <strong>%s</strong> — %s%s</li>' %
+                     (esc(code), esc(label), esc(explanation),
+                      ' <span class="used">%d× verwendet</span>' % cut_counts[code] if cut_counts[code] else '')
+                     for code, (label, explanation) in _CUT_MEANING.items())
+    return ('<div class="overview" aria-label="Ergebnisübersicht">'
+            '<div class="metric %s"><strong>%s</strong><span>Textabdeckung und Ausgabe-Zeitgrenze geprüft; '
+            'keine Garantie für gemessene Sprechzeit.</span></div>'
+            '<div class="metric"><strong>%d semantisch / %d Fallback-Schnitt%s</strong>'
+            '<span>Fallback bedeutet nicht automatisch schlechter Inhalt.</span></div>'
+            '<div class="metric %s"><strong>%d Jev-Urteil%s fehlgeschlagen</strong>'
+            '<span>Das betrifft die Bewertung, nicht die Gültigkeit der Partition.</span></div></div>'
+            '%s<p class="note">Ein <code>status: error</code> bei einem Grenzurteil bedeutet '
+            '<strong>nicht, dass die Partition ungültig</strong> ist. Ursachen: %s.</p>'
+            '<details open><summary>Was bedeuten die Schnittarten?</summary><ul class="legend">%s</ul></details>' %
+            ('ok' if valid else 'warn', 'Partition gültig' if valid else 'Partition ungültig',
+             cut_counts['accepted_semantic'], sum(n for k, n in cut_counts.items() if k != 'accepted_semantic'),
+             '' if sum(n for k, n in cut_counts.items() if k != 'accepted_semantic') == 1 else 'e',
+             'warn' if errors else 'ok', error_count, '' if error_count == 1 else 'e',
+             key_hint, error_detail, legend))
+
+
 def render(data, video_id=None, video=None):
     esc = lambda value: html.escape(str(value), quote=True)
     blocks = []
@@ -85,13 +134,21 @@ def render(data, video_id=None, video=None):
         else:
             media = ('<video controls preload="none" data-start="%s" data-end="%s" src="%s"></video>' %
                      (esc(start), esc(end), esc(Path(video).resolve().as_uri())))
-        blocks.append('<section><h2>%s — %s to %s</h2>%s<pre>%s</pre><p>Quality: %s; timing: %s; source timing: %s; classification: %s</p></section>' %
-                      (esc(unit['id']), esc(start), esc(end), media, esc(unit['text']),
-                       esc(unit['quality_status']), esc(unit['timing_basis']),
-                       esc(unit['source_timing_basis']), esc(unit['classification_status'])))
-    cuts = ''.join('<li>%s at %s: %s (%s; %s)</li>' %
-                   (esc(c['provenance']), esc(c['time']), esc(c['reason']),
-                    esc(c['timing_basis']), esc(json.dumps(c['judgment'], ensure_ascii=False)))
+        quality = unit['quality_status']
+        quality_label = {'semantic': 'Semantisch gestützt', 'degraded': 'Fallback beteiligt',
+                         'unresolved_search': 'Suche unklar'}.get(quality, quality)
+        blocks.append('<section><h2>%s — %s to %s</h2><p class="unit-meta"><span class="badge">%s</span> %s '
+                      '· Zeitbasis: <code>%s</code> (Quelle: <code>%s</code>) '
+                      '· Klassifikation: %s</p>%s<pre>%s</pre></section>' %
+                      (esc(unit['id']), esc(start), esc(end), esc(quality_label),
+                       esc(_QUALITY_MEANING.get(quality, '')), esc(unit['timing_basis']),
+                       esc(unit['source_timing_basis']),
+                       'übersprungen (Preview)' if unit['classification_status'] == 'skipped' else esc(unit['classification_status']),
+                       media, esc(unit['text'])))
+    cuts = ''.join('<li><strong>%s</strong> <code>%s</code> bei %s s — %s '
+                   '<small>(Zeitbasis: %s)</small></li>' %
+                   (esc(_CUT_MEANING.get(c['provenance'], (c['provenance'], ''))[0]),
+                    esc(c['provenance']), esc(c['time']), esc(c['reason']), esc(c['timing_basis']))
                    for c in data['cuts'])
     scores = ''.join('<li><pre>%s</pre></li>' % esc(json.dumps(v, ensure_ascii=False, indent=2))
                      for v in data['boundary_scores'])
@@ -103,13 +160,26 @@ def render(data, video_id=None, video=None):
       v.addEventListener('play',()=>{if(v.currentTime<a||v.currentTime>=b)v.currentTime=a});
       v.addEventListener('timeupdate',()=>{if(v.currentTime>=b)v.pause()});
     });</script>''' if video else ''
-    return ('<!doctype html><html lang="en"><meta charset="utf-8"><title>SNU preview — %s</title>'
-            '<style>body{font:16px system-ui;max-width:900px;margin:auto;padding:2rem}iframe,video{width:100%%;aspect-ratio:16/9}section{border-top:1px solid #bbb;padding:1rem 0}pre{white-space:pre-wrap}</style>'
-            '<h1>SNU preview — %s</h1><p>Playback follows output timestamps, not measured speech. '
-            'YouTube integer-second embed endpoints can extend beyond fractional SNU bounds.</p>%s'
-            '<h2>Cuts and fallback provenance</h2><ol>%s</ol><h2>All boundary verdicts (boundary_scores)</h2><ol>%s</ol>'
-            '<h2>Reproducibility: policy, normalization and usage</h2><pre>%s</pre>%s</html>' %
-            (esc(data['title']), esc(data['title']), ''.join(blocks), cuts, scores,
+    return ('<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>SNU preview — %s</title><style>'
+            'body{font:16px/1.5 system-ui;max-width:980px;margin:auto;padding:1.5rem;color:#243044;background:#f7f9fc}'
+            'h1,h2{line-height:1.2}iframe,video{width:100%%;aspect-ratio:16/9;border:0}section,details{background:white;'
+            'border:1px solid #dce3ed;border-radius:12px;padding:1rem;margin:1rem 0}section{border-left:5px solid #93a6be}'
+            'pre{white-space:pre-wrap;overflow-wrap:anywhere}code{overflow-wrap:anywhere}ol li,ul li{margin:.4rem 0}'
+            '.overview{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.8rem}'
+            '.metric{background:white;border:1px solid #dce3ed;border-top:4px solid #637ea2;border-radius:10px;padding:1rem}'
+            '.metric.ok{border-top-color:#24866a}.metric.warn{border-top-color:#d29228}'
+            '.metric strong,.metric span{display:block}.metric span,.note,.unit-meta{color:#536174;font-size:.92rem}'
+            '.hint{background:#fff2d8;border-left:4px solid #d29228;padding:.8rem}.badge,.used{background:#e5ebf4;'
+            'border-radius:6px;padding:.15rem .45rem}.legend{padding-left:1.3rem}summary{cursor:pointer;font-weight:600}'
+            '</style><h1>SNU preview — %s</h1><p>Abspielzeiten folgen den Ausgabe-Zeitstempeln, '
+            'nicht einer gemessenen Sprechzeit. YouTube rundet eingebettete Clips auf ganze Sekunden.</p>%s%s'
+            '<h2>SNUs und Clips</h2>%s<h2>Gewählte Schnitte</h2><ol>%s</ol>'
+            '<details><summary>Technische Grenzurteile (boundary_scores, %d)</summary><ol>%s</ol></details>'
+            '<details><summary>Reproduzierbarkeit: Policy, Normalisierung und Nutzung</summary><pre>%s</pre></details>%s</html>' %
+            (esc(data['title']), esc(data['title']), _quality_overview(data, esc),
+             '<p class="note">Klassifikation wird in der Vorschau übersprungen; sie ist unabhängig von der Schnittqualität.</p>',
+             ''.join(blocks), cuts, len(data['boundary_scores']), scores,
              esc(json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True)), script))
 
 
@@ -212,8 +282,11 @@ def run(store, args):
         print('preview failed: %s' % exc, file=sys.stderr)
         return 2 if isinstance(exc, ValueError) else 1
     page = Path(result['folder']) / 'preview.html'
-    print('Preview: %s (%d SNUs, %d fallback cuts; Jev %d requests)' %
+    print('Preview: %s (%d SNUs, %d Fallback-Schnitte; Jev %d Requests)' %
           (page.absolute(), result['snus'], result['forced'], result['usage']['requests']), flush=True)
+    if result.get('judge_errors'):
+        print('Jev-Urteile fehlgeschlagen: %s. Partition trotzdem gültig; Details in preview.html.' %
+              ', '.join(result['judge_errors']), flush=True)
     if args.no_serve:
         return 0
     server = make_server(page, video)

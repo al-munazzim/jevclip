@@ -135,6 +135,22 @@ class PreviewTests(unittest.TestCase):
             self.assertNotEqual(cli.main(args), 0)
             self.assertFalse((folder / 'preview.html').exists())
 
+    def test_cli_names_missing_jev_key_without_treating_partition_as_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            video = Path(d) / 'clip.mp4'
+            video.write_bytes(b'video')
+            subs = Path(d) / 'clip.srt'
+            subs.write_text('1\n00:00:00,000 --> 00:00:02,000\nAlpha\n\n'
+                            '2\n00:00:03,000 --> 00:00:05,000\nBeta\n')
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {'TYPESAFE_API_KEY': ''}), contextlib.redirect_stdout(output):
+                code = cli.main(['--db', str(Path(d) / 'db'), 'preview', str(video),
+                                 '--subs', str(subs), '--out', str(Path(d) / 'out'),
+                                 '--max-snu-seconds', '3', '--no-serve'])
+            self.assertEqual(code, 0)
+            self.assertIn('no_api_key', output.getvalue())
+            self.assertIn('Fallback', output.getvalue())
+
     def test_invalid_input_and_cap_do_not_download(self):
         with tempfile.TemporaryDirectory() as d:
             for url in ('https://example.com/watch?v=Vp4LcxHoojI',
@@ -162,3 +178,27 @@ class PreviewTests(unittest.TestCase):
         self.assertIn('&lt;img src=x', page)
         self.assertIn('&amp; text', page)
         self.assertIn('start=0&amp;end=2', page)
+
+    def test_quality_overview_explains_fallbacks_without_calling_valid_result_bad(self):
+        from jevclip.preview import render
+        data = {'title': 'Demo', 'schema_version': 2, 'doc_id': 'demo',
+                'strategy': 'snu-partition', 'rubric': 'demo', 'policy': {},
+                'partition': {'status': 'valid', 'fallback_cuts': 1,
+                              'accepted_semantic_cuts': 0, 'timing_basis': 'source_cue'},
+                'normalization': {}, 'usage': {},
+                'snus': [{'id': 'SNU1', 'start': 0, 'end': 2, 'text': 'Hallo',
+                          'quality_status': 'degraded', 'timing_basis': 'source_cue',
+                          'source_timing_basis': 'source_cue', 'classification_status': 'skipped'}],
+                'cuts': [{'provenance': 'best_effort_pause', 'time': 2, 'reason': 'hard cap',
+                          'timing_basis': 'source_cue', 'judgment': None}],
+                'boundary_scores': [{'status': 'error', 'error': 'no_api_key'}]}
+        page = render(data, video_id='Vp4LcxHoojI')
+        self.assertIn('Partition gültig', page)
+        self.assertIn('1 Fallback-Schnitt', page)
+        self.assertIn('Jev-Urteil fehlgeschlagen', page)
+        self.assertIn('no_api_key', page)
+        self.assertIn('nicht, dass die Partition ungültig', page)
+        self.assertIn('best_effort_judged', page)
+        self.assertIn('best_effort_within_cue', page)
+        self.assertIn('Untertitelpause', page)
+        self.assertIn('<details', page)

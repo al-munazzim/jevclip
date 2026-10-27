@@ -312,4 +312,5 @@ def process_partition(store, client, video, subs, out_dir, title, target, reuse,
             'candidates': len(transcript.segments), 'boundaries': len(verdicts),
             'cuts': len(cuts), 'snus': len(units), 'unresolved': 0, 'oversized_unresolved': 0,
             'forced': degraded, 'usage': spent, 'reused': sum(v.reused for v in verdicts),
-            'errors': [], 'partition_valid': True}
+            'errors': [], 'judge_errors': sorted({v.error_code for v in verdicts if v.error_code}),
+            'partition_valid': True}
