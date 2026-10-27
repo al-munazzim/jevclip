@@ -6,30 +6,32 @@
 
 The directed search should accept only boundaries that pass its semantic checks. On real transcripts it can run out of search budget, receive judge errors, or find no defensible cut before an SNU becomes too long. Lowering the semantic threshold to make a partition would misrepresent the cut's quality. Conversely, treating a complete but clearly labelled mechanical partition as a failed partition confuses *validity* with *quality*.
 
-The proposed contract is: for a usable, timed transcript, return ordered, nonempty SNUs covering the **normalized input cues** exactly once, with each output duration at most a configured hard cap, **only if that guarantee can actually be verified**. If it cannot, fail explicitly; do not publish the proposed validated result. Fallback boundaries are visibly best-effort, never silently promoted to semantic judgments. For untimed text, offer at most a separate, explicitly labelled text/estimated-time policy; an estimated reading duration is not a video-time guarantee.
+The proposed contract is: for a usable transcript, return ordered, nonempty SNUs covering the **normalized input cues** exactly once. A cap can be verified against cue timestamps at cue-level cuts; if a cut must fall inside a cue, its position in media time is only an estimate unless word-level alignment exists. In the proposed opt-in best-effort mode, validate the cap against the **output's estimated timestamps**, with a configurable planning margin, and mark every estimated within-cue cut and affected unit. Do not claim this verifies actual spoken duration: a 10–15% timing error is acceptable for this use case, but is not a measured guarantee. Fallback boundaries are never silently promoted to semantic judgments. Untimed text needs a separate text/estimated-time policy, not a video-time claim.
 
 ## Proposed flow
 
 ```mermaid
 flowchart TD
-    A[Parse and normalize source cues] --> B{Usable source and timing?}
+    A[Parse and audit source cues] --> B{Usable source and timing?}
     B -- No --> X[Explicit input or timing failure]
-    B -- Yes --> C[Directed semantic boundary search]
+    B -- Yes --> N[Normalize with recorded changes]
+    N --> C[Directed semantic boundary search]
     C --> D[Keep accepted cuts and judgment evidence]
     D --> E{Any interval exceeds hard cap?}
     E -- No --> V[Validate coverage, order, times and cap]
     E -- Yes --> F[Repair overlong intervals with marked fallback cuts]
     F --> G{Within-cue split needed?}
     G -- No --> V
-    G -- Yes --> H{Reliable alignment available?}
+    G -- Yes --> H{Word alignment available?}
     H -- Yes --> I[Split at aligned text positions; record timing source]
-    H -- No --> X
+    H -- No --> J[Split at text boundaries; estimate sub-cue times and mark them]
     I --> V
-    V -- Pass --> P[Publish JSON and report with quality summary]
+    J --> V
+    V -- Pass --> P[Publish JSON and report with timing and quality summary]
     V -- Fail --> X
 ```
 
-The diagram describes the **strict measured-time mode**. An optional estimated-time mode, if built later, has a different output guarantee and must never take the `Pass` path claiming measured video-time bounds.
+The diagram describes the proposed **opt-in best-effort mode**. `Pass` means exact normalized-text coverage and a validated cap on the output timestamps, including explicitly estimated timestamps; it does **not** certify a measured video-time bound. A future strict measured-time mode could instead fail at `H` when alignment is missing.
 
 ### 1. Preserve semantic decisions
 
@@ -47,18 +49,20 @@ Within a tier, document the score and tie-break order in implementation; do not 
 
 ### 3. The overlong-cue limit
 
-An individually overlong cue needs more than a cue-boundary cut. If reliable word/character alignment to media time exists, split at text positions and retain exact source offsets plus the alignment source; prefer word boundaries, then grapheme boundaries where necessary. **Plain SRT/VTT cue start/end times do not locate words inside a cue.** Interpolating sub-cue times by text length can produce an *estimated* partition but cannot certify a hard bound on actual spoken/video content. In strict measured-time mode, an overlong cue without reliable alignment is an explicit failure, not a success with invented measured timestamps. A future opt-in estimate mode may expose `timing_basis: estimated` and a separately named estimated cap, without promising a measured video-time cap.
+An individually overlong cue needs more than a cue-boundary cut. Prefer reliable word alignment to media time if available. Otherwise, in this opt-in mode, split its normalized text at sentence boundaries, then word boundaries, then grapheme boundaries only if necessary; retain contiguous source offsets. Assign sub-cue times by a deterministic, documented text-length interpolation within the original cue's start/end interval. Preserve the original cue endpoints and use shared estimated cut times for adjacent pieces so no interval or text is lost or duplicated. Record `timing_basis: interpolated_cue` on affected units/cuts; aligned cuts must record their actual alignment source. **Plain SRT/VTT cue start/end times do not locate words inside a cue.** Interpolation is an approximation, not a certification of actual spoken/video duration.
 
-Timestamp gaps count towards an SNU's elapsed `end - start` duration. Reject nonfinite, reversed, or overlapping cue timings that cannot be represented as ordered, non-overlapping units without losing or inventing alignment; do not silently rewrite them to pass validation. If normalization drops duplicate rolling captions or markup, coverage is defined against the resulting normalized cue/text stream, with the normalization policy reported separately.
+Aim below the requested cap to allow for timing error. For example, with a 90-second desired limit and a 15% planning margin, target roughly 78 seconds of estimated duration; validate every resulting output duration against the configured cap as well. The margin does not make a 90-second measured-duration guarantee, and no fixed percentage can bound arbitrary pauses or uneven speech inside a cue. If even a grapheme-level split cannot produce nonempty, advancing units under the configured estimated cap, fail explicitly rather than publish an invalid partition.
+
+Timestamp gaps count towards an SNU's elapsed `end - start` duration. Audit the raw parsed cues **before** normalization: today's `_clean()` silently drops reversed cues and does not reject nonfinite times. Reject nonfinite, reversed, or overlapping cue timings that cannot be represented as ordered, non-overlapping units without losing text; do not silently rewrite them to pass validation. If normalization drops duplicate rolling captions or markup, coverage is defined against the resulting normalized cue/text stream, with the normalization policy reported separately. Start-only copied transcripts currently synthesize end times from reading rate but mark them as timed; persist their inferred timing basis and never label those bounds measured. Preserve enough timestamp precision through storage to validate the same values that are serialized; millisecond rounding must not silently push a cut over the cap.
 
 ### 4. Validate before publication
 
 Represent each output as half-open source ranges, e.g. `(cue_index, text_start, text_stop)`, so within-cue pieces can be checked without comparing re-formatted strings. Validation checks:
 
 - At least one nonempty unit; source ranges are contiguous, ordered, disjoint, and cover every normalized cue's text exactly once (no loss or duplication).
-- Every unit has finite, ordered start/end times; units follow source order and have non-overlapping time intervals in strict mode. Gaps between units are allowed.
-- Every strict timed unit has `end - start <= max_snu_seconds`, with a specified tolerance for rounding; validate unrounded values before serializing timestamps.
-- Every cut has its provenance, reason and available judgment evidence; estimated timings cannot be serialized as measured timings.
+- Every unit has finite, ordered start/end times; units follow source order and have non-overlapping time intervals. Gaps between units are allowed.
+- Every unit has `end - start <= max_snu_seconds` **according to its output timestamps**, with a specified tolerance for rounding; validate before and after serialization. An interpolated or otherwise inferred interval must not be described as a measured bound.
+- Every cut has its provenance, reason, available judgment evidence and timing basis; retain estimated timing provenance in JSON and report.
 
 Build and validate in memory, then publish a single coherent result and report. On validation failure, return a nonzero status and diagnostic; do not leave a newly generated `snus.json` that looks valid. Existing outputs from earlier runs must not be mistaken for this run's result (remove, replace atomically, or segregate by run). Classification and rendering happen only after the partition contract is checked, and file publication needs a failure-safe strategy for both artifacts.
 
@@ -87,8 +91,8 @@ Proposed result fields (names illustrative until implementation review):
 
 | Dimension | Values / evidence | Meaning |
 |---|---|---|
-| Partition | `valid` / `invalid`; coverage and cap checks, timing basis | Mathematical completeness and bounded duration, not semantic quality |
-| Cut | `accepted_semantic`, `best_effort_judged`, `best_effort_pause`, `best_effort_sentence`, `best_effort_cue`, `best_effort_within_cue` | Per-boundary provenance, reason, score if available; never upgrade a fallback to accepted |
+| Partition | `valid` / `invalid`; coverage and output-timestamp cap checks, timing basis | Mathematical completeness and bounded output duration, **not** guaranteed actual spoken duration or semantic quality |
+| Cut | `accepted_semantic`, `best_effort_judged`, `best_effort_pause`, `best_effort_sentence`, `best_effort_cue`, `best_effort_within_cue` | Per-boundary provenance, reason, score if available, timing basis; never upgrade a fallback to accepted |
 | Quality | fallback cut count, affected unit count and duration share, short tails, unresolved search reasons | A valid partition may still be low quality |
 | Classification | `ok` / `failed` / `skipped` per SNU | Kind/standalone labeling is independent of partition validity |
 
@@ -96,17 +100,17 @@ Do not reuse today's overloaded `SNU.status` as the sole indicator: it currently
 
 ## CLI and downstream contract
 
-Introduce a distinct opt-in mode, tentatively `--ensure-partition --max-snu-seconds N` (finite `N > 0`), rather than changing the meaning of existing `--max-snu-seconds` or `--force-max-snu`. Default strict search remains unchanged. The intended strict-mode exit contract is **0** for a validated measured-time partition, including one explicitly marked degraded by fallback cuts; **nonzero** for unusable input, unverifiable timing, no bounded partition, validation/publication failure, or other technical failure. Judge unavailability can produce a fully marked fallback partition only under an explicit policy, not as an unannounced semantic success. Batch exit is nonzero if any input fails. Callers that require semantic quality or classification can reject a valid-but-degraded output based on its separate metadata.
+Introduce a distinct opt-in best-effort mode, tentatively `--ensure-partition --max-snu-seconds N` (finite `N > 0`), rather than changing the meaning of existing `--max-snu-seconds` or `--force-max-snu`. Define the configurable planning margin separately (tentatively `--timing-margin 0.15`, only relevant for estimated cuts); do not silently loosen `N`. Default strict semantic search remains unchanged. The intended opt-in exit contract is **0** for a validated partition bounded by its **output timestamps**, including one explicitly marked degraded by fallback cuts or estimated timing; **nonzero** for unusable input, no bounded output partition, validation/publication failure, or other technical failure. Judge unavailability can produce a fully marked fallback partition only under an explicit policy, not as an unannounced semantic success. Batch exit is nonzero if any input fails. Callers that require measured timing, semantic quality or classification can reject a valid-but-degraded output based on separate metadata.
 
-Downstream ingestion should consume only the versioned, validated partition and retain cut provenance and quality metrics; it should not infer success from the existence of `snus.json` or from SNU count alone. Do not change downstream ingestion policy until the jevclip contract is implemented, tested, and reviewed. This document does **not** introduce or endorse a silent always-succeed mode.
+Downstream ingestion should consume only the versioned, validated partition and retain cut provenance, timing basis and quality metrics; it should not infer success from the existence of `snus.json` or from SNU count alone. Do not change downstream ingestion policy until the jevclip contract is implemented, tested, and reviewed. This document does **not** introduce or endorse a silent always-succeed mode or a measured-time guarantee for interpolated cuts.
 
 ## Implementation order and acceptance checks
 
-1. Define and test source-range and timing-basis representations; decide schema versioning and migration for existing JSON consumers.
-2. Implement deterministic fallback selection and within-cue alignment handling (or explicit strict failure), without altering existing mode.
-3. Add coverage/time/cap validator and failure-safe publication; separate classification status from partition/quality.
+1. Audit raw cue timings before normalization; record normalization changes. Define and test source-range and timing-basis representations, including inferred ends for start-only transcripts; decide schema versioning and migration for existing JSON consumers.
+2. Implement deterministic fallback selection and within-cue alignment or text-based interpolation with a planning margin, without altering existing mode.
+3. Add coverage/time/output-cap validator and failure-safe publication; separate classification status from partition/quality.
 4. Expose opt-in CLI and document exit codes, then integrate downstream only after contract tests pass.
 
-Tests should cover no accepted boundaries; partial semantic cuts; exhausted budget and judge errors (including explicit judge-unavailable policy); rejected high-scoring candidate provenance; a single overlong cue with/without reliable alignment; an impossible strict cap; short tails; timestamp gaps, overlaps and reversed times; untimed scripts and start-only transcripts with inferred ends; exact normalized-text coverage/order; classification failure; rounding at the cap; stale output after failure; multi-input exit behavior. Re-run the real transcripts that yielded oversized unresolved SNUs and inspect both the verified cap **and** fallback rate/quality, not just the number of units.
+Tests should cover no accepted boundaries; partial semantic cuts; exhausted budget and judge errors (including explicit judge-unavailable policy); rejected high-scoring candidate provenance; a single overlong cue with/without reliable alignment and with unevenly spaced text; an impossible estimated cap; short tails; timestamp gaps, overlaps, reversed and nonfinite times before normalization; untimed scripts and start-only transcripts with inferred ends; exact normalized-text coverage/order across within-cue splits; classification failure; rounding at the cap; stale output after failure; multi-input exit behavior. Re-run the real transcripts that yielded oversized unresolved SNUs and inspect output-timestamp cap, fallback rate and actual timing error against media on a small labelled sample; do not infer a 10–15% error rate from interpolation alone.
 
-**Review questions before coding:** Do we have or want word-level alignment for overlong cues, or should strict mode fail there? Should estimated-time partitions be a separate mode/output schema? Which downstream consumers rely on today's `status` and exit codes? What deterministic tie-break and fallback-quality thresholds should ingestion apply?
+**Review questions before coding:** Which downstream consumers rely on today's `status` and exit codes? What deterministic tie-break and fallback-quality thresholds should ingestion apply? Should aligned and interpolated timing share the opt-in schema with per-unit timing basis, or need separate consumer policies? How much error does interpolation show on representative long cues?

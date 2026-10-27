@@ -147,7 +147,7 @@ jevclip snu talk.de.vtt --max-snu-seconds 90 --force-max-snu
 
 `--threshold` 的暂定默认值为 0.60；这只在少量真实字幕上做过初步比较，还需要人工标注边界来评估误切和漏切。未解决的搜索区间会标为 `unresolved`，即使没有长度上限也返回非零状态；显式选择 `--force-max-snu` 表示接受报告中标出的低质量/不确定切点。`--max-snu-seconds` 默认不启用。启用后，超过目标且找不到可信边界的单元标为 `oversized_unresolved`，命令返回非零状态；它不是默认的强制切割开关。`--min-snu-seconds` 默认 12 秒，避免两个语义判断合在一起产生只有几个词的碎片（设为 0 可关闭）。`--force-max-snu` 必须同时指定正的时长限制，且所有强制切点会在 JSON 和报告里与语义接受的切点分开。`--search-budget` 限制每个搜索位置的 Jev 请求数（默认 8）；搜索预算耗尽或判断失败时保留不确定状态，不把它当成接受切点。改变问题措辞或搜索上下文会产生新的缓存键，因此首次运行新策略会重新调用 Jev。
 
-后续可验证、限长的保底拆分方案（**设计提案，尚未实现**）见 [SNU failsafe design](docs/snu-failsafe-design.md)，含流程与状态图；目前的 `--force-max-snu` 不能保证拆开单条超长字幕。
+后续可验证文本覆盖、并按输出时间限长的保底拆分方案（**设计提案，尚未实现**）见 [SNU failsafe design](docs/snu-failsafe-design.md)，含流程与状态图。单条超长字幕可在显式选择的保底模式中按文字估算内部切点，并标记时间为估计值；这不保证实际视频时长。目前的 `--force-max-snu` 不能拆开单条超长字幕。
 
 ## 它判断什么
 
