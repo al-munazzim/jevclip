@@ -136,6 +136,8 @@ python3 examples/make_demo.py demo && jevclip run demo/ && python3 examples/scor
 
 ## SNU：按语义边界拆分文字稿
 
+想直接在 CLI 里测试逐段视频播放：`jevclip preview https://youtu.be/Vp4LcxHoojI --max-snu-seconds 90`。自动取字幕（可选 yt-dlp）、本地视频 `--subs`、`--no-serve` 和排障见 [preview 教程](docs/preview-tutorial.md)。
+
 `jevclip snu` 只输出 `snus.json` 和 `snu-report.md`，**不剪视频文件**；它与上面的 `jevclip run` 高亮/去水流程独立。粗分段仅提供起始搜索位置，Jev 判断下一条语义边界是在当前位置、之前还是之后；程序沿原始字幕 cue 边界定向细查，并在真正接受切点前检查前文是否完整、后文是否开始新单元。没有可信边界时不会默默制造一个。
 
 ```bash

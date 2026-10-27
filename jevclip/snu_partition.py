@@ -213,7 +213,7 @@ def clear_partition_artifacts(out_dir, source):
 
 def process_partition(store, client, video, subs, out_dir, title, target, reuse, threshold,
                       min_confidence, require_complete, window, classify, soft_threshold,
-                      maximum, search_budget, min_snu_seconds, margin):
+                      maximum, search_budget, min_snu_seconds, margin, preview_renderer=None):
     from . import snu
     if not math.isfinite(maximum) or maximum <= 0 or not math.isfinite(margin) or not 0 <= margin < 1:
         raise ValueError('ensure-partition requires finite positive max and timing margin in [0, 1)')
@@ -259,7 +259,11 @@ def process_partition(store, client, video, subs, out_dir, title, target, reuse,
             'subtitles': transcript.subtitles, 'video': transcript.video,
             'strategy': 'snu-partition', 'rubric': snu.RUBRIC,
             'policy': {'ensure_partition': True, 'max_snu_seconds': maximum,
-                       'timing_margin': margin, 'classification': classify},
+                       'timing_margin': margin, 'classification': classify,
+                       'threshold': threshold, 'min_confidence': min_confidence,
+                       'require_complete': require_complete, 'window': window,
+                       'soft_threshold': soft_threshold, 'search_budget': search_budget,
+                       'min_snu_seconds': min_snu_seconds, 'segment_seconds': target},
             'normalization': {'raw_cues': len(raw), 'normalized_cues': len(normalized),
                               'changed_text_cues': sum(a.text != b.text for a, b in zip(raw, normalized)),
                               'dropped_or_merged_cues': len(raw) - len(normalized),
@@ -294,6 +298,9 @@ def process_partition(store, client, video, subs, out_dir, title, target, reuse,
             fh.write(encoded)
         with open(os.path.join(stage, 'snu-report.md'), 'w', encoding='utf-8') as fh:
             fh.write(report)
+        if preview_renderer is not None:
+            with open(os.path.join(stage, 'preview.html'), 'w', encoding='utf-8') as fh:
+                fh.write(preview_renderer(data))
         os.symlink(os.path.basename(stage), link)
         os.replace(link, folder)
     except Exception:

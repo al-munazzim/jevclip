@@ -532,13 +532,13 @@ def process(store, client, video, subs, out_dir, title=None, target=subtitles.TA
             reuse=True, threshold=0.60, min_confidence=0.0, require_complete=0.50,
             window=8, classify=True, soft_threshold=None, max_snu_seconds=0,
             force_max_snu=False, search_budget=8, min_snu_seconds=12.0,
-            ensure_partition=False, timing_margin=.15):
+            ensure_partition=False, timing_margin=.15, preview_renderer=None):
     if ensure_partition:
         from .snu_partition import process_partition
         return process_partition(store, client, video, subs, out_dir, title, target, reuse,
                                  threshold, min_confidence, require_complete, window, classify,
                                  soft_threshold, max_snu_seconds, search_budget,
-                                 min_snu_seconds, timing_margin)
+                                 min_snu_seconds, timing_margin, preview_renderer)
     transcript = store.ingest(subs, video, title=title, target=target)
     before = dict(client.usage)
     boundaries = judge_boundaries(store, client, transcript, reuse=reuse, window=window,

@@ -75,6 +75,16 @@ def main(argv=None):
     p.add_argument("--no-classify", action="store_true", help="skip per-SNU kind/standalone classification")
     p.add_argument("--no-reuse", action="store_true", help="call Jev even for cached boundary/SNU judgments")
 
+    p = sub.add_parser("preview", help="preview clipped SNU embeds from a YouTube URL or local video")
+    p.add_argument("source", help="YouTube URL or local video path")
+    p.add_argument("--subs", help="timed subtitles for a local video")
+    p.add_argument("--out", default="jevclip-preview-out")
+    p.add_argument("--max-snu-seconds", type=float, default=90.0)
+    p.add_argument("--threshold", type=float, default=.60)
+    p.add_argument("--lang", default="de", help="YouTube caption language code (default de; e.g. en)")
+    p.add_argument("--model", default=MODEL)
+    p.add_argument("--no-serve", action="store_true", help="write HTML and exit without a browser/server")
+
     p = sub.add_parser("export", help="judged segments as JSONL with an empty keep/drop label")
     p.add_argument("path")
 
@@ -93,6 +103,9 @@ def main(argv=None):
             return _eval(args)
         if args.cmd == "snu":
             return _snu(store, args)
+        if args.cmd == "preview":
+            from .preview import run
+            return run(store, args)
         return _run(store, args)
 
 
