@@ -248,3 +248,39 @@ class PreviewTests(unittest.TestCase):
         self.assertIn('&lt;img onerror=alert(1)&gt;', sections[0])
         self.assertNotIn('second-only', sections[0])
         self.assertIn('second-only', sections[1])
+
+    def test_snu_cards_show_adjacent_cut_types_and_explain_unclear_search(self):
+        from jevclip.preview import render
+        base = {'start': 0, 'end': 2, 'text': 'Hallo', 'timing_basis': 'source_cue',
+                'source_timing_basis': 'source_cue', 'classification_status': 'skipped'}
+        units = [{**base, 'id': 'SNU1', 'quality_status': 'degraded'},
+                 {**base, 'id': 'SNU2', 'start': 2, 'end': 4,
+                  'quality_status': 'unresolved_search'},
+                 {**base, 'id': 'SNU3', 'start': 4, 'end': 6,
+                  'quality_status': 'semantic'}]
+        data = {'title': 'Demo', 'schema_version': 2, 'doc_id': 'demo',
+                'strategy': 'snu-partition', 'rubric': 'demo', 'policy': {},
+                'partition': {'status': 'valid'}, 'normalization': {}, 'usage': {},
+                'snus': units, 'boundary_scores': [],
+                'cuts': [{'provenance': 'best_effort_pause', 'time': 2,
+                          'reason': 'hard cap', 'timing_basis': 'source_cue'},
+                         {'provenance': 'accepted_semantic', 'time': 4,
+                          'reason': 'accepted semantic judgment', 'timing_basis': 'source_cue'}]}
+        page = render(data, video_id='Vp4LcxHoojI')
+        sections = [part.split('</section>')[0].split('<details class="snu-details">')[0]
+                    for part in page.split('<section>')[1:]]
+        self.assertEqual(len(sections), 3)
+        self.assertIn('Schnitt davor: Anfang', sections[0])
+        self.assertIn('Schnitt danach:', sections[0])
+        self.assertIn('best_effort_pause', sections[0])
+        self.assertNotIn('accepted_semantic', sections[0])
+        self.assertIn('best_effort_pause', sections[1])
+        self.assertIn('accepted_semantic', sections[1])
+        self.assertIn('Suche unklar', sections[1])
+        self.assertIn('accepted_semantic', sections[2])
+        self.assertIn('Schnitt danach: Ende', sections[2])
+        self.assertNotIn('best_effort_pause', sections[2])
+        legend = page.split('<h2>SNUs und Clips</h2>')[0]
+        self.assertIn('Was bedeuten die SNU-Status?', legend)
+        self.assertIn('<code>unresolved_search</code>', legend)
+        self.assertIn('Die Suche ist für diese SNU unvollständig', legend)

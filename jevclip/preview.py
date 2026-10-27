@@ -30,6 +30,12 @@ _CUT_MEANING = {
     'best_effort_within_cue': ('Innerhalb einer Cue', 'Eine lange Cue wurde im Text geteilt; die Schnittzeit darin ist geschätzt.'),
 }
 
+_QUALITY_LABELS = {
+    'semantic': 'Semantisch gestützt',
+    'degraded': 'Fallback beteiligt',
+    'unresolved_search': 'Suche unklar',
+}
+
 _QUALITY_MEANING = {
     'semantic': 'Keine Fallback-Schnitte in dieser SNU; das sagt nichts über den Inhalt aus.',
     'degraded': 'Mindestens ein mechanischer Fallback-Schnitt berührt diese SNU; sie kann trotzdem gut sein.',
@@ -73,6 +79,12 @@ def _snu_details(unit, esc):
             '(Quellbereich, Zeitbasis, Status)</summary><p class="note">Quellpositionen beziehen sich '
             'auf normalisierte Untertitel: Cue-Index und Zeichenoffset beginnen bei 0; '
             'der Quellende-Offset ist exklusiv.</p><dl>%s</dl></details>' % ''.join(rows))
+
+
+def _cut_label(cut, esc):
+    code = cut['provenance']
+    label = _CUT_MEANING.get(code, (code, ''))[0]
+    return '<strong>%s</strong> <code>%s</code>' % (esc(label), esc(code))
 
 
 def youtube_id(source):
@@ -137,6 +149,9 @@ def _quality_overview(data, esc):
                      (esc(code), esc(label), esc(explanation),
                       ' <span class="used">%d× verwendet</span>' % cut_counts[code] if cut_counts[code] else '')
                      for code, (label, explanation) in _CUT_MEANING.items())
+    quality_legend = ''.join('<li><strong>%s</strong> <code>%s</code> — %s</li>' %
+                             (esc(_QUALITY_LABELS[code]), esc(code), esc(explanation))
+                             for code, explanation in _QUALITY_MEANING.items())
     return ('<div class="overview" aria-label="Ergebnisübersicht">'
             '<div class="metric %s"><strong>%s</strong><span>Textabdeckung und Ausgabe-Zeitgrenze geprüft; '
             'keine Garantie für gemessene Sprechzeit.</span></div>'
@@ -146,18 +161,21 @@ def _quality_overview(data, esc):
             '<span>Das betrifft die Bewertung, nicht die Gültigkeit der Partition.</span></div></div>'
             '%s<p class="note">Ein <code>status: error</code> bei einem Grenzurteil bedeutet '
             '<strong>nicht, dass die Partition ungültig</strong> ist. Ursachen: %s.</p>'
+            '<details open><summary>Was bedeuten die SNU-Status?</summary><p class="note">'
+            'Der Status beschreibt die Prüfbarkeit einer SNU; die Schnittart bezeichnet '
+            'die Grenze davor oder danach.</p><ul class="legend">%s</ul></details>'
             '<details open><summary>Was bedeuten die Schnittarten?</summary><ul class="legend">%s</ul></details>' %
             ('ok' if valid else 'warn', 'Partition gültig' if valid else 'Partition ungültig',
              cut_counts['accepted_semantic'], sum(n for k, n in cut_counts.items() if k != 'accepted_semantic'),
              '' if sum(n for k, n in cut_counts.items() if k != 'accepted_semantic') == 1 else 'e',
              'warn' if errors else 'ok', error_count, '' if error_count == 1 else 'e',
-             key_hint, error_detail, legend))
+             key_hint, error_detail, quality_legend, legend))
 
 
 def render(data, video_id=None, video=None):
     esc = lambda value: html.escape(str(value), quote=True)
     blocks = []
-    for unit in data['snus']:
+    for index, unit in enumerate(data['snus']):
         start, end = unit['start'], unit['end']
         if video_id:
             # YouTube's embed start/end parameters take integer seconds; the
@@ -173,14 +191,16 @@ def render(data, video_id=None, video=None):
             media = ('<video controls preload="none" data-start="%s" data-end="%s" src="%s"></video>' %
                      (esc(start), esc(end), esc(Path(video).resolve().as_uri())))
         quality = unit['quality_status']
-        quality_label = {'semantic': 'Semantisch gestützt', 'degraded': 'Fallback beteiligt',
-                         'unresolved_search': 'Suche unklar'}.get(quality, quality)
+        quality_label = _QUALITY_LABELS.get(quality, quality)
+        before = _cut_label(data['cuts'][index - 1], esc) if 0 < index <= len(data['cuts']) else ('Anfang' if index == 0 else 'unbekannt')
+        after = _cut_label(data['cuts'][index], esc) if index < len(data['cuts']) else 'Ende'
         blocks.append('<section><h2>%s — %s bis %s s</h2><p class="unit-meta">'
                       '<span class="badge">%s</span> · Dauer: %s s · Zeitbasis: <code>%s</code>'
-                      '</p>%s<pre>%s</pre>%s</section>' %
+                      '</p><p class="adjacent-cuts">Schnitt davor: %s<br>Schnitt danach: %s</p>'
+                      '%s<pre>%s</pre>%s</section>' %
                       (esc(unit['id']), esc(start), esc(end), esc(quality_label),
-                       esc(round(end - start, 3)), esc(unit['timing_basis']), media, esc(unit['text']),
-                       _snu_details(unit, esc)))
+                       esc(round(end - start, 3)), esc(unit['timing_basis']), before, after,
+                       media, esc(unit['text']), _snu_details(unit, esc)))
     cuts = ''.join('<li><strong>%s</strong> <code>%s</code> bei %s s — %s '
                    '<small>(Zeitbasis: %s)</small></li>' %
                    (esc(_CUT_MEANING.get(c['provenance'], (c['provenance'], ''))[0]),
