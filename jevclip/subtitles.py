@@ -58,7 +58,7 @@ def _seconds(value):
     return int(h or 0) * 3600 + int(mins) * 60 + int(secs) + (float("0." + frac) if frac else 0.0)
 
 
-def parse(path):
+def parse(path, raw_cues=False):
     """SRT, WebVTT, whisper.cpp JSON (-oj), a JSON list of {start, end, text}
     segments, or a .txt / .md script. Returns cues in order; a script without
     timestamps gives cues with `para` set and no real times."""
@@ -66,14 +66,14 @@ def parse(path):
     with open(path, encoding="utf-8-sig", errors="replace") as fh:
         raw = fh.read()
     if suffix in SCRIPT_SUFFIXES:
-        return _parse_text(raw)
+        return _parse_text(raw, raw_cues=raw_cues)
     if suffix == ".json":
         cues = _parse_json(json.loads(raw))
     elif suffix in (".srt", ".vtt"):
         cues = _parse_blocks(raw)
     else:
         raise ValueError("%s: expected .srt, .vtt, .json subtitles or a .txt / .md script" % path)
-    return _clean(cues)
+    return cues if raw_cues else _clean(cues)
 
 
 # A timestamp opening a line: "0:01", "12:34", "1:02:03", "[00:01:23]", "(0:05) …", "00:01 - …"
@@ -93,18 +93,21 @@ def _join(lines):
     return flat("\n".join(lines))
 
 
-def _parse_text(raw):
+def _parse_text(raw, raw_cues=False):
     """Timestamps opening at least two lines, in order, make a timed
     transcript (YouTube's copied transcript, "[00:01] …"); otherwise it is a
     script, cut by paragraphs and sentences. Subtitles saved as .txt are
     read as subtitles."""
     if re.search(r"\d\s*-->\s*\d", raw):
-        return _clean(_parse_blocks(raw))
+        cues = _parse_blocks(raw)
+        return cues if raw_cues else _clean(cues)
     lines = [line.strip() for line in raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     entries = []
     for line in lines:
         m = _STAMP.match(line) if line else None
         t = _seconds(m.group(1)) if m else None
+        if raw_cues and t is not None and entries and t < entries[-1][0]:
+            raise ValueError('start-only cue timing out of order')
         if t is not None and (not entries or t >= entries[-1][0]):
             entries.append((t, [m.group(2)] if m.group(2).strip() else []))
         elif line and entries:
