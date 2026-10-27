@@ -36,6 +36,44 @@ _QUALITY_MEANING = {
     'unresolved_search': 'Die Suche ist für diese SNU unvollständig; kein Qualitätsurteil über den Inhalt.',
 }
 
+_SNU_FIELD_LABELS = {
+    'source_start': 'Quellanfang', 'source_stop': 'Quellende',
+    'timing_basis': 'Zeitbasis', 'source_timing_basis': 'Quelle der Zeitstempel',
+    'quality_status': 'Qualitätsstatus', 'classification_status': 'Klassifikationsstatus',
+    'kind': 'Typ', 'kind_confidence': 'Typ-Konfidenz', 'standalone': 'Eigenständig',
+    'classification_error': 'Klassifikationsfehler',
+}
+
+
+def _snu_details(unit, esc):
+    """Show every SNU JSON field not already visible in the card header/text."""
+    fields = [key for key in _SNU_FIELD_LABELS if key in unit]
+    fields += sorted(key for key in unit if key not in _SNU_FIELD_LABELS
+                     and key not in ('id', 'start', 'end', 'text'))
+    rows = []
+    for key in fields:
+        value = unit[key]
+        if key in ('source_start', 'source_stop') and isinstance(value, list) and len(value) == 2:
+            display = 'Cue-Index %s, Zeichenoffset %s' % (esc(value[0]), esc(value[1]))
+        elif value is None:
+            display = '<code>null</code> (nicht gesetzt)'
+        elif isinstance(value, bool):
+            display = '%s <code>%s</code>' % ('Ja' if value else 'Nein', str(value).lower())
+        elif isinstance(value, (dict, list)):
+            display = '<code>%s</code>' % esc(json.dumps(value, ensure_ascii=False))
+        else:
+            display = '<code>%s</code>' % esc(value)
+        if key == 'quality_status':
+            display += ' — %s' % esc(_QUALITY_MEANING.get(str(value), ''))
+        elif key == 'classification_status' and value == 'skipped':
+            display += ' — In der Vorschau nicht ausgeführt; unabhängig von der Schnittqualität.'
+        rows.append('<div><dt>%s</dt><dd>%s</dd></div>' %
+                    (esc(_SNU_FIELD_LABELS.get(key, key)), display))
+    return ('<details class="snu-details"><summary>Weitere SNU-Daten '
+            '(Quellbereich, Zeitbasis, Status)</summary><p class="note">Quellpositionen beziehen sich '
+            'auf normalisierte Untertitel: Cue-Index und Zeichenoffset beginnen bei 0; '
+            'der Quellende-Offset ist exklusiv.</p><dl>%s</dl></details>' % ''.join(rows))
+
 
 def youtube_id(source):
     url = urlsplit(source)
@@ -137,14 +175,12 @@ def render(data, video_id=None, video=None):
         quality = unit['quality_status']
         quality_label = {'semantic': 'Semantisch gestützt', 'degraded': 'Fallback beteiligt',
                          'unresolved_search': 'Suche unklar'}.get(quality, quality)
-        blocks.append('<section><h2>%s — %s to %s</h2><p class="unit-meta"><span class="badge">%s</span> %s '
-                      '· Zeitbasis: <code>%s</code> (Quelle: <code>%s</code>) '
-                      '· Klassifikation: %s</p>%s<pre>%s</pre></section>' %
+        blocks.append('<section><h2>%s — %s bis %s s</h2><p class="unit-meta">'
+                      '<span class="badge">%s</span> · Dauer: %s s · Zeitbasis: <code>%s</code>'
+                      '</p>%s<pre>%s</pre>%s</section>' %
                       (esc(unit['id']), esc(start), esc(end), esc(quality_label),
-                       esc(_QUALITY_MEANING.get(quality, '')), esc(unit['timing_basis']),
-                       esc(unit['source_timing_basis']),
-                       'übersprungen (Preview)' if unit['classification_status'] == 'skipped' else esc(unit['classification_status']),
-                       media, esc(unit['text'])))
+                       esc(round(end - start, 3)), esc(unit['timing_basis']), media, esc(unit['text']),
+                       _snu_details(unit, esc)))
     cuts = ''.join('<li><strong>%s</strong> <code>%s</code> bei %s s — %s '
                    '<small>(Zeitbasis: %s)</small></li>' %
                    (esc(_CUT_MEANING.get(c['provenance'], (c['provenance'], ''))[0]),
@@ -172,6 +208,10 @@ def render(data, video_id=None, video=None):
             '.metric strong,.metric span{display:block}.metric span,.note,.unit-meta{color:#536174;font-size:.92rem}'
             '.hint{background:#fff2d8;border-left:4px solid #d29228;padding:.8rem}.badge,.used{background:#e5ebf4;'
             'border-radius:6px;padding:.15rem .45rem}.legend{padding-left:1.3rem}summary{cursor:pointer;font-weight:600}'
+            '.snu-details{background:#f7f9fc}.snu-details dl{margin:.8rem 0 0}.snu-details dl>div{display:grid;'
+            'grid-template-columns:minmax(150px,35%%) 1fr;gap:.8rem;padding:.35rem 0;border-top:1px solid #e4e9f0}'
+            '.snu-details dt{font-weight:600}.snu-details dd{margin:0;overflow-wrap:anywhere}'
+            '@media(max-width:600px){.snu-details dl>div{grid-template-columns:1fr;gap:0}}'
             '</style><h1>SNU preview — %s</h1><p>Abspielzeiten folgen den Ausgabe-Zeitstempeln, '
             'nicht einer gemessenen Sprechzeit. YouTube rundet eingebettete Clips auf ganze Sekunden.</p>%s%s'
             '<h2>SNUs und Clips</h2>%s<h2>Gewählte Schnitte</h2><ol>%s</ol>'

@@ -202,3 +202,49 @@ class PreviewTests(unittest.TestCase):
         self.assertIn('best_effort_within_cue', page)
         self.assertIn('Untertitelpause', page)
         self.assertIn('<details', page)
+
+    def test_each_snu_shows_key_values_and_expandable_complete_metadata(self):
+        from jevclip.preview import render
+        first = {'id': 'SNU1', 'start': 1.5, 'end': 7.5, 'text': 'Hallo',
+                 'source_start': [0, 0], 'source_stop': [2, 5],
+                 'timing_basis': 'interpolated_cue', 'source_timing_basis': 'source_cue',
+                 'quality_status': 'degraded', 'classification_status': 'skipped',
+                 'kind': 'claim', 'kind_confidence': 0.8, 'standalone': True,
+                 'classification_error': None, 'future_field': '<img onerror=alert(1)>',
+                 '<em>extra</em>': {'unsafe': '<script>bad</script>', 'valid': False}}
+        second = {**first, 'id': 'SNU2', 'start': 7.5, 'end': 10,
+                  'text': 'Welt', 'source_start': [2, 5], 'source_stop': [3, 4],
+                  'quality_status': 'semantic', 'standalone': False, 'future_field': 'second-only'}
+        data = {'title': 'Demo', 'schema_version': 2, 'doc_id': 'demo',
+                'strategy': 'snu-partition', 'rubric': 'demo', 'policy': {},
+                'partition': {'status': 'valid'}, 'normalization': {}, 'usage': {},
+                'snus': [first, second], 'cuts': [], 'boundary_scores': []}
+        page = render(data, video_id='Vp4LcxHoojI')
+        sections = [part.split('</section>')[0] for part in page.split('<section>')[1:]]
+        self.assertEqual(len(sections), 2)
+        visible = sections[0].split('<details class="snu-details">')[0]
+        self.assertIn('SNU1', visible)
+        self.assertIn('1.5 bis 7.5 s', visible)
+        self.assertIn('Dauer: 6.0 s', visible)
+        self.assertIn('Fallback beteiligt', visible)
+        self.assertIn('Hallo', visible)
+        self.assertIn('<details class="snu-details">', sections[0])
+        for label in ('Quellanfang', 'Quellende', 'Zeitbasis', 'Quelle der Zeitstempel',
+                      'Qualitätsstatus', 'Klassifikationsstatus', 'Typ', 'Typ-Konfidenz',
+                      'Eigenständig', 'Klassifikationsfehler', 'future_field'):
+            self.assertIn(label, sections[0])
+        self.assertIn('Cue-Index 0, Zeichenoffset 0', sections[0])
+        self.assertIn('Cue-Index 2, Zeichenoffset 5', sections[0])
+        self.assertIn('interpolated_cue', sections[0])
+        self.assertIn('0.8', sections[0])
+        self.assertIn('<code>null</code> (nicht gesetzt)', sections[0])
+        self.assertIn('Ja <code>true</code>', sections[0])
+        self.assertIn('Nein <code>false</code>', sections[1])
+        self.assertNotIn('<img onerror=', page)
+        self.assertNotIn('<em>extra</em>', page)
+        self.assertNotIn('<script>bad</script>', page)
+        self.assertIn('&lt;em&gt;extra&lt;/em&gt;', sections[0])
+        self.assertIn('&lt;script&gt;bad&lt;/script&gt;', sections[0])
+        self.assertIn('&lt;img onerror=alert(1)&gt;', sections[0])
+        self.assertNotIn('second-only', sections[0])
+        self.assertIn('second-only', sections[1])
