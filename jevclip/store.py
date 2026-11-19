@@ -110,7 +110,8 @@ class Store:
     def __exit__(self, *exc):
         self.close()
 
-    def ingest(self, subtitles_path, video=None, doc_id=None, title=None, target=subtitles.TARGET):
+    def ingest(self, subtitles_path, video=None, doc_id=None, title=None, target=subtitles.TARGET,
+               precision=3):
         """Store a transcript and its segmentation. Same text and same
         segments is a no-op apart from file locations and title; anything
         else bumps the version."""
@@ -121,7 +122,8 @@ class Store:
         lines, cue_map, pos = [], [], 0
         for cue in cues:
             lines.append(cue.text)
-            entry = [pos, pos + len(cue.text), round(cue.start, 3), round(cue.end, 3)]
+            entry = [pos, pos + len(cue.text), round(cue.start, precision) if precision is not None else cue.start,
+                     round(cue.end, precision) if precision is not None else cue.end]
             cue_map.append(entry if timed else entry + [cue.para])
             pos += len(cue.text) + 1
         text = "\n".join(lines) + "\n"

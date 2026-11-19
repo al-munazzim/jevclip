@@ -60,6 +60,10 @@ def main(argv=None):
                    help="mark longer SNUs unresolved; never force a cut unless --force-max-snu is set")
     p.add_argument("--force-max-snu", action="store_true",
                    help="explicitly permit low-quality cuts at --max-snu-seconds; mark them forced in the report")
+    p.add_argument("--ensure-partition", action="store_true",
+                   help="opt-in bounded output-timestamp partition with marked fallback cuts")
+    p.add_argument("--timing-margin", type=float, default=None,
+                   help="interpolated-cut planning margin (default 0.15; requires --ensure-partition)")
     p.add_argument("--search-budget", type=int, default=8,
                    help="maximum Jev evaluations when refining one proposed SNU boundary (default 8)")
     p.add_argument("--min-snu-seconds", type=float, default=12.0,
@@ -70,6 +74,16 @@ def main(argv=None):
     p.add_argument("--model", default=MODEL)
     p.add_argument("--no-classify", action="store_true", help="skip per-SNU kind/standalone classification")
     p.add_argument("--no-reuse", action="store_true", help="call Jev even for cached boundary/SNU judgments")
+
+    p = sub.add_parser("preview", help="preview clipped SNU embeds from a YouTube URL or local video")
+    p.add_argument("source", help="YouTube URL or local video path")
+    p.add_argument("--subs", help="timed subtitles for a local video")
+    p.add_argument("--out", default="jevclip-preview-out")
+    p.add_argument("--max-snu-seconds", type=float, default=90.0)
+    p.add_argument("--threshold", type=float, default=.60)
+    p.add_argument("--lang", default="de", help="YouTube caption language code (default de; e.g. en)")
+    p.add_argument("--model", default=MODEL)
+    p.add_argument("--no-serve", action="store_true", help="write HTML and exit without a browser/server")
 
     p = sub.add_parser("export", help="judged segments as JSONL with an empty keep/drop label")
     p.add_argument("path")
@@ -89,6 +103,9 @@ def main(argv=None):
             return _eval(args)
         if args.cmd == "snu":
             return _snu(store, args)
+        if args.cmd == "preview":
+            from .preview import run
+            return run(store, args)
         return _run(store, args)
 
 
@@ -128,6 +145,13 @@ def _snu(store, args):
     if args.force_max_snu and args.max_snu_seconds == 0:
         print("--force-max-snu requires a positive --max-snu-seconds", file=sys.stderr)
         return 2
+    if args.ensure_partition and (args.max_snu_seconds <= 0 or args.force_max_snu):
+        print("--ensure-partition requires positive --max-snu-seconds and excludes --force-max-snu", file=sys.stderr)
+        return 2
+    if args.timing_margin is not None and (not args.ensure_partition or
+        not math.isfinite(args.timing_margin) or not 0 <= args.timing_margin < 1):
+        print("--timing-margin requires --ensure-partition and a finite number in [0, 1)", file=sys.stderr)
+        return 2
     items = pipeline.discover(args.paths, subs=args.subs, exclude=args.out)
     if not items:
         print("no videos or subtitle files found", file=sys.stderr)
@@ -138,6 +162,14 @@ def _snu(store, args):
         for n, (video, subs) in enumerate(items, 1):
             print("[%d/%d] %s" % (n, len(items), os.path.basename(video or subs)))
             if subs is None:
+                if args.ensure_partition:
+                    from .snu_partition import clear_partition_artifacts
+                    try:
+                        clear_partition_artifacts(args.out, video)
+                    except OSError as exc:
+                        print("      failed to clear stale partition: %s" % exc)
+                        failed += 1
+                        continue
                 print("      skipped: no subtitles or script next to it (.srt / .vtt / .json / .txt / .md with the same name)")
                 failed += 1
                 continue
@@ -149,7 +181,9 @@ def _snu(store, args):
                                 classify=not args.no_classify, soft_threshold=args.soft_threshold,
                                 max_snu_seconds=args.max_snu_seconds,
                                 force_max_snu=args.force_max_snu, search_budget=args.search_budget,
-                                min_snu_seconds=args.min_snu_seconds)
+                                min_snu_seconds=args.min_snu_seconds,
+                                ensure_partition=args.ensure_partition,
+                                timing_margin=.15 if args.timing_margin is None else args.timing_margin)
             except (ValueError, RuntimeError, OSError) as exc:
                 print("      failed: %s" % exc)
                 failed += 1
@@ -165,11 +199,15 @@ def _snu(store, args):
             if r.get("oversized_unresolved"):
                 extra.append("%d oversized unresolved SNU(s)" % r["oversized_unresolved"])
             if r.get("forced"):
-                extra.append("%d explicitly forced low-quality cut(s)" % r["forced"])
-            if r["errors"] or r.get("oversized_unresolved") or (r.get("unresolved") and not args.force_max_snu):
+                extra.append(("%d fallback cut(s)" if args.ensure_partition else
+                              "%d explicitly forced low-quality cut(s)") % r["forced"])
+            if (args.ensure_partition and not r.get("partition_valid")) or (not args.ensure_partition and (
+                    r["errors"] or r.get("oversized_unresolved") or
+                    (r.get("unresolved") and not args.force_max_snu))):
                 failed += 1
-            print("      %d candidates, %d accepted cuts, %d forced cuts → %d SNUs" % (
-                r["candidates"], r["cuts"] - r.get("forced", 0), r.get("forced", 0), r["snus"]))
+            print("      %d candidates, %d accepted cuts, %d %s cuts → %d SNUs" % (
+                r["candidates"], r["cuts"] - r.get("forced", 0), r.get("forced", 0),
+                "fallback" if args.ensure_partition else "forced", r["snus"]))
             print("      Jev %d requests $%.4f%s → %s/" % (
                 u["requests"], u["usd"], " · " + "; ".join(extra) if extra else "", r["folder"]))
     finally:
