@@ -27,13 +27,16 @@ jobs:
           # (glibc 2.36) as well as newer hosts.
           - os: ubuntu-22.04
             asset_suffix: linux-x86_64
-          - os: macos-14
+          - os: macos-15
             asset_suffix: macos-arm64
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          # Manual rebuilds must use the requested tag, not the workflow branch.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
